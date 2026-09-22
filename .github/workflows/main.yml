@@ -74,6 +74,8 @@ jobs:
             rails-version: "8.0.5.1"
             mongo-driver-version: "2.26.0"
             mongoid-version: "7.6.1"
+            mongoid-git: https://github.com/tablecheck/mongoid-ultra.git
+            mongoid-ref: fad21072de6cb539a8addec278a6beb4bf1a5321
             mongodb-version: "8.0"
           - lane: latest
             ruby-version: "4.0.7"
@@ -89,15 +91,10 @@ jobs:
       RAILS_VERSION: ${{ matrix.rails-version }}
       MONGO_DRIVER_VERSION: ${{ matrix.mongo-driver-version }}
       MONGOID_VERSION: ${{ matrix.mongoid-version }}
-      MONGOID_GIT: ${{ matrix.lane == 'pinned' && vars.MONGOID_GIT || '' }}
-      MONGOID_REF: ${{ matrix.lane == 'pinned' && vars.MONGOID_REF || '' }}
+      MONGOID_GIT: ${{ matrix.mongoid-git }}
+      MONGOID_REF: ${{ matrix.mongoid-ref }}
       RAILS_ENV: test
     steps:
-      - name: Check Mongoid source
-        if: ${{ matrix.lane == 'pinned' && env.MONGOID_GIT == '' }}
-        run: |
-          echo "::error::Set the MONGOID_GIT and MONGOID_REF repository variables to a Mongoid 7.6.1 source that supports Rails 8.0"
-          exit 1
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Start MongoDB replica set
