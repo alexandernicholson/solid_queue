@@ -138,4 +138,7 @@ jobs:
           bundle exec ruby -Itest -e 'Dir["test/mongoid/**/*_test.rb"].sort_by { |file| [ File.basename(file) == "arguments_test.rb" ? 1 : 0, file ] }.each { |file| require File.expand_path(file) }'
       - name: Upload MongoDB logs on failure
         if: ${{ failure() }}
-        run: docker logs solid-queue-mongodb
+        run: |
+          if docker inspect solid-queue-mongodb >/dev/null 2>&1; then
+            docker logs solid-queue-mongodb
+          fi
