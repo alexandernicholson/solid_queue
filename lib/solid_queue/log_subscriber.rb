@@ -8,7 +8,28 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
   end
 
   def claim(event)
-    debug formatted_event(event, action: "Claim jobs", **event.payload.slice(:process_id, :job_ids, :claimed_job_ids, :size))
+    debug formatted_event(event, action: "Claim jobs", **event.payload.slice(:process_id, :job_ids, :claimed_job_ids, :size, :candidates, :claimed))
+  end
+
+  def transaction_retry(event)
+    attributes = event.payload.slice(:operation, :attempt, :error_label, :phase, :deadline_exceeded)
+    warn formatted_event(event, action: "MongoDB transaction retry", **attributes)
+  end
+
+  def mongo_primary_change(event)
+    info formatted_event(event, action: "MongoDB primary change", **event.payload)
+  end
+
+  def mongo_server_unavailable(event)
+    warn formatted_event(event, action: "MongoDB server unavailable", **event.payload)
+  end
+
+  def mongo_pool_checkout_failed(event)
+    warn formatted_event(event, action: "MongoDB pool checkout failed", **event.payload)
+  end
+
+  def mongo_pool_checkout_wait(event)
+    warn formatted_event(event, action: "MongoDB pool checkout waited", **event.payload)
   end
 
   def release_many_claimed(event)

@@ -55,7 +55,7 @@ module SolidQueue::Processes
 
       def heartbeat
         process&.heartbeat
-      rescue ActiveRecord::RecordNotFound
+      rescue SolidQueue::RecordNotFound
         # Our registration is gone: a supervisor pruned it
         stop_to_be_replaced
       rescue => error
@@ -81,7 +81,7 @@ module SolidQueue::Processes
       end
 
       def reload_metadata
-        wrap_in_app_executor { process&.update(metadata: metadata.compact) }
+        wrap_in_app_executor { process&.update_metadata!(metadata.compact) }
       end
   end
 end

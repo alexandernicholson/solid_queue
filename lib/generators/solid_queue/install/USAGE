@@ -3,9 +3,10 @@ Description:
 
 Example:
     bin/rails generate solid_queue:install
+    bin/rails generate solid_queue:install --backend=mongodb
 
     This will perform the following:
-        Adds solid_queue db schema
+        Adds the solid_queue database schema for the Active Record backend
         Adds default configurations
         Replaces Active Job's adapter in environment configuration
         Installs bin/jobs binstub to start the supervisor

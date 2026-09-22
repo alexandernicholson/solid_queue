@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: solid_queue_benchmark
+      POSTGRES_HOST_AUTH_METHOD: trust
+    cpus: 2
+    mem_limit: 2g
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready --dbname=solid_queue_benchmark --username=postgres" ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  mongodb:
+    image: mongo:8.0
+    command: [ "mongod", "--replSet", "rs0", "--bind_ip_all" ]
+    cpus: 2
+    mem_limit: 2g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval 'try {
+            if (db.hello().isWritablePrimary) quit(0);
+            rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb:27017"}]});
+            quit(1)
+          } catch (error) { quit(1) }'
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  benchmark:
+    build:
+      context: ..
+      dockerfile: benchmarks/Dockerfile
+    working_dir: /work
+    environment:
+      BUNDLE_GEMFILE: /work/benchmarks/Gemfile
+    cpus: 2
+    mem_limit: 2g
+    profiles: [ benchmark ]

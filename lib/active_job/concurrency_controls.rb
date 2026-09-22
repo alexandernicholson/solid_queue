@@ -30,12 +30,13 @@ module ActiveJob
       if self.class.concurrency_key
         param = compute_concurrency_parameter(self.class.concurrency_key)
 
-        case param
-        when ActiveRecord::Base
-          [ concurrency_group, param.class.name, param.id ]
+        identity = if active_record_model?(param) || global_id_model?(param)
+          [ param.class.name, param.id ]
         else
-          [ concurrency_group, param ]
-        end.compact.join("/")
+          [ param ]
+        end
+
+        [ concurrency_group, *identity ].compact.join("/")
       end
     end
 
@@ -46,6 +47,14 @@ module ActiveJob
     private
       def concurrency_group
         compute_concurrency_parameter(self.class.concurrency_group)
+      end
+
+      def active_record_model?(value)
+        defined?(::ActiveRecord::Base) && value.is_a?(::ActiveRecord::Base)
+      end
+
+      def global_id_model?(value)
+        defined?(::GlobalID::Identification) && value.is_a?(::GlobalID::Identification)
       end
 
       def compute_concurrency_parameter(option)

@@ -79,3 +79,66 @@ jobs:
             test/dummy/log/test.log
           if-no-files-found: ignore
           retention-days: 30
+
+  mongodb-tests:
+    name: MongoDB / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby-version:
+          - "3.2"
+          - "3.3"
+          - "3.4"
+          - "4.0"
+        rails-version: [ "~> 7.1.0", "~> 7.2.0", "~> 8.0.0", "~> 8.1.0" ]
+        mongo-driver-version: [ "~> 2.24.0", "~> 2.26.0" ]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/mongodb.gemfile
+      MONGODB_URI: mongodb://127.0.0.1:27017/solid_queue_test?replicaSet=rs0&appName=solid-queue-fault-tests
+      MONGODB_FAULT_TESTS: "1"
+      RAILS_VERSION: ${{ matrix.rails-version }}
+      MONGO_DRIVER_VERSION: ${{ matrix.mongo-driver-version }}
+      RAILS_ENV: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Start MongoDB replica set
+        run: |
+          docker run --detach --name solid-queue-mongodb --publish 127.0.0.1:27017:27017 mongo:8.0 mongod --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
+          for attempt in $(seq 1 60); do
+            if docker exec solid-queue-mongodb mongosh --quiet --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)'; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs solid-queue-mongodb
+              exit 1
+            fi
+            sleep 1
+          done
+          docker exec solid-queue-mongodb mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for attempt in $(seq 1 60); do
+            if docker exec solid-queue-mongodb mongosh --quiet --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)'; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs solid-queue-mongodb
+              exit 1
+            fi
+            sleep 1
+          done
+      - name: Setup Ruby and install gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+          cache-version: 1
+      - name: Run MongoDB tests
+        run: bundle exec ruby -Itest -e 'Dir["test/mongodb/**/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
+      - name: Run Mongoid integration tests
+        run: |
+          bundle exec ruby -Itest -e 'Dir["test/mongoid/**/*_test.rb"].sort_by { |file| [ File.basename(file) == "arguments_test.rb" ? 1 : 0, file ] }.each { |file| require File.expand_path(file) }'
+      - name: Upload MongoDB logs on failure
+        if: ${{ failure() }}
+        run: docker logs solid-queue-mongodb

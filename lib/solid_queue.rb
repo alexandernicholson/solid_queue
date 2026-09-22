@@ -4,6 +4,7 @@ require "solid_queue/version"
 require "solid_queue/engine"
 
 require "active_job"
+require "active_model"
 require "active_job/queue_adapters"
 require "active_job/batch_id"
 
@@ -16,12 +17,39 @@ loader = Zeitwerk::Loader.for_gem(warn_on_extra_files: false)
 loader.ignore("#{__dir__}/solid_queue/tasks.rb")
 loader.ignore("#{__dir__}/generators")
 loader.ignore("#{__dir__}/puma")
+loader.ignore("#{__dir__}/solid_queue/mongo/models")
+loader.ignore("#{__dir__}/solid_queue/mongo/transactions.rb")
 loader.setup
 
 module SolidQueue
   extend self
 
   DEFAULT_LOGGER = ActiveSupport::Logger.new($stdout)
+
+  class PersistenceError < StandardError; end
+  class RecordNotFound < PersistenceError; end
+
+  mattr_accessor :backend, default: :active_record
+  mattr_accessor :mongo_url, default: ENV.fetch("MONGODB_URI", "mongodb://127.0.0.1:27017/solid_queue")
+  mattr_accessor :mongo_database, :mongo_client, :mongoid_client
+  mattr_accessor :mongo_transaction_timeout, default: 5.seconds
+  mattr_accessor :mongo_command_monitoring, default: false
+
+  def mongodb?
+    backend.to_sym == :mongodb
+  end
+
+  def validate_backend!
+    unless %i[ active_record mongodb ].include?(backend.to_sym)
+      raise ArgumentError, "Unknown Solid Queue backend: #{backend.inspect}. Use :active_record or :mongodb."
+    end
+  end
+
+  def with_mongo_session(session, client: nil, &block)
+    raise ArgumentError, "Mongo sessions require the :mongodb backend" unless mongodb?
+
+    Mongo.with_session(session, client: client, &block)
+  end
 
   mattr_accessor :logger, default: DEFAULT_LOGGER
   mattr_accessor :app_executor, :on_thread_error, :connects_to

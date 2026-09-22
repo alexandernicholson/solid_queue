@@ -1,3 +1,26 @@
+# Adopting the experimental MongoDB backend
+
+Solid Queue includes an **experimental** native MongoDB backend. The SQL `:active_record` backend remains the default, so existing installations keep their configuration and schema. Active Job still uses `:solid_queue`; select `config.solid_queue.backend = :mongodb` for queue storage.
+
+Drain an existing SQL queue before switching. Stop new enqueues, process or account for ready, scheduled, blocked, in-progress, and failed jobs, then stop the SQL queue processes. Deploy the MongoDB setting to producers and queue processes together. Keep the old records available for inspection; switching back also requires draining or accounting for MongoDB work. The backend setting does not transfer jobs.
+
+Provide Ruby 3.2+, Rails 7.1+, `mongo >= 2.24, < 3`, and a transaction-capable MongoDB replica set or sharded cluster. For a new installation:
+
+```bash
+bin/rails generate solid_queue:install --backend=mongodb
+bundle install
+bin/rails solid_queue:prepare
+bin/jobs
+```
+
+The generator adds the driver dependency and selects MongoDB in production instead of installing an SQL queue schema. Set `MONGODB_URI` or `config.solid_queue.mongo_url` before preparation; `config.solid_queue.mongo_database` overrides the URI database. For an existing application, install the driver and select the backend explicitly. Run `solid_queue:prepare` before starting producers or queue processes and on upgrades that change indexes; MongoDB index updates use this task rather than SQL migration tasks. It validates the topology and prepares collections and indexes; queue access raises a configuration error if they are missing. `bin/rails solid_queue:check` validates process configuration. Mongoid is optional; `config.solid_queue.mongoid_client` selects a named client, and `config.solid_queue.mongo_client` accepts a driver client or callable. Driver-only queue storage does not require an SQL queue database.
+
+Update consumers that expect integer queue IDs or Active Record relations. MongoDB job, process, and batch IDs exposed by native models and notifications are strings. Workers still respect configured queue order and priority; equal-priority ObjectIds are not globally insertion-ordered across processes within a second. Active Job arguments are kept as serialized JSON, preserving large integers beyond BSON int64. The MongoDB backend registers a `BSON::ObjectId` serializer; loading Mongoid also enables document GlobalIDs. MongoDB limits a document to 16 MiB: Solid Queue reserves 128 KiB for lifecycle fields and raises `SolidQueue::Job::EnqueueError` for an oversized enqueue. Constrained and batched enqueues roll back together; failure details are bounded.
+
+For atomic application and queue writes, use the same `Mongo::Client` and explicit `Mongo::Session` with `SolidQueue.with_mongo_session(session, client: client)`. Keep dispatcher concurrency and batch maintenance enabled to repair work deferred by caller-owned transactions, whose commits have no driver callback. Use a transactional outbox for a loss-free handoff between clients/databases that cannot share a transaction. Transactions may retry; make jobs with external effects idempotent. Graceful shutdown releases claims; abnormal process loss fails them. Active Job retry/discard policy and manual Admin retry/discard apply as on SQL. Finished-job cleanup follows `preserve_finished_jobs` and `clear_finished_jobs_after`; keep the installed cleanup schedule and dispatcher maintenance running. See the README's [MongoDB transactions](README.md#mongodb-transactions-and-delivery-guarantees) and [batch maintenance](README.md#batch-maintenance) for examples.
+
+`SolidQueue::Admin` exposes native queue, job, batch, process, and recurring-task actions and queries. The released dashboard consumer expects Active Record relations; its MongoDB-aware adaptation has not been released. Focused lifecycle, payload, integration, and dashboard-adaptation checks have passed. The declared compatibility matrix and comparative benchmark remain release verification tools, not completed performance or broad-matrix proof.
+
 # Upgrading to version 1.7.x
 This version introduces support for grouping jobs into batches, which needs new tables. Fresh installs get them with the base schema; existing installations need to copy the migration that adds them and run it:
 

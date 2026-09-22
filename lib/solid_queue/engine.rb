@@ -10,9 +10,22 @@ module SolidQueue
 
     config.solid_queue = ActiveSupport::OrderedOptions.new
 
-    initializer "solid_queue.config" do
+    initializer "solid_queue.config", after: :load_environment_config, before: :set_load_path do
       config.solid_queue.each do |name, value|
         SolidQueue.public_send("#{name}=", value)
+      end
+    end
+
+    initializer "solid_queue.persistence", after: "solid_queue.config", before: :set_load_path do
+      SolidQueue.validate_backend!
+
+      if SolidQueue.mongodb?
+        model_root = root.join("lib/solid_queue/mongo/models").to_s
+        Rails.autoloaders.main.ignore(root.join("app/models"))
+        paths["app/models"] = model_root
+        config.autoload_paths << model_root
+        config.eager_load_paths << model_root
+        SolidQueue::Mongo
       end
     end
 
@@ -42,10 +55,12 @@ module SolidQueue
       ActiveSupport.on_load :active_job do
         include ActiveJob::ConcurrencyControls
 
-        ActiveSupport.on_load :active_record do
-          ActiveJob::Base.include ActiveJob::BatchId
-        end
+        include ActiveJob::BatchId
       end
+    end
+
+    initializer "solid_queue.mongoid_integration", after: "solid_queue.active_job.extensions" do
+      SolidQueue::MongoidIntegration.install! if SolidQueue.mongodb? || defined?(::Mongoid)
     end
 
     initializer "solid_queue.deprecator" do |app|

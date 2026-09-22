@@ -54,6 +54,22 @@ module SolidQueue
           upsert_all tasks.map(&:attributes_for_upsert)
         end
       end
+
+      def dynamic_tasks(excluding: [])
+        dynamic.where.not(key: excluding).to_a
+      end
+
+      def task_keys
+        pluck(:key)
+      end
+
+      def delete_static_except(keys)
+        static.where.not(key: keys).delete_all
+      end
+
+      def static_tasks(keys)
+        static.where(key: keys).to_a
+      end
     end
 
 

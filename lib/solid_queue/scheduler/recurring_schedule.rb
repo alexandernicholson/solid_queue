@@ -70,25 +70,25 @@ module SolidQueue
       end
 
       def schedule_created_dynamic_tasks
-        RecurringTask.dynamic.where.not(key: scheduled_tasks.keys).each do |task|
+        RecurringTask.dynamic_tasks(excluding: scheduled_tasks.keys).each do |task|
           schedule_task(task)
         end
       end
 
       def unschedule_deleted_dynamic_tasks
-        (scheduled_tasks.keys - RecurringTask.pluck(:key)).each do |key|
+        (scheduled_tasks.keys - RecurringTask.task_keys).each do |key|
           scheduled_tasks[key].cancel
           scheduled_tasks.delete(key)
         end
       end
 
       def persist_static_tasks
-        RecurringTask.static.where.not(key: static_task_keys).delete_all
+        RecurringTask.delete_static_except(static_task_keys)
         RecurringTask.create_or_update_all static_tasks
       end
 
       def reload_static_tasks
-        @static_tasks = RecurringTask.static.where(key: static_task_keys).to_a
+        @static_tasks = RecurringTask.static_tasks(static_task_keys)
       end
 
       def reload_dynamic_tasks
@@ -96,7 +96,7 @@ module SolidQueue
       end
 
       def load_dynamic_tasks
-        dynamic_tasks_enabled? ? RecurringTask.dynamic.to_a : []
+        dynamic_tasks_enabled? ? RecurringTask.dynamic_tasks : []
       end
 
       def schedule(task, run_at: task.next_time)

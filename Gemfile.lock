@@ -6,6 +6,7 @@ PATH
       activerecord (>= 7.1)
       concurrent-ruby (>= 1.3.1)
       fugit (~> 1.11)
+      logger (>= 1.6)
       railties (>= 7.1)
       thor (>= 1.3.1)
 
@@ -64,6 +65,7 @@ GEM
     base64 (0.3.0)
     benchmark (0.4.1)
     bigdecimal (3.3.1)
+    bson (5.2.0)
     builder (3.3.0)
     concurrent-ruby (1.3.5)
     connection_pool (2.5.4)
@@ -106,6 +108,14 @@ GEM
     minitest (5.26.0)
     mocha (2.1.0)
       ruby2_keywords (>= 0.0.5)
+    mongo (2.26.0)
+      base64
+      bson (>= 4.14.1, < 6.0.0)
+    mongoid (9.1.1)
+      activemodel (>= 5.1, < 8.2, != 7.0.0)
+      concurrent-ruby (>= 1.0.5, < 2.0)
+      mongo (>= 2.18.0, < 3.0.0)
+      ostruct
     mutex_m (0.3.0)
     mysql2 (0.5.6)
     nio4r (2.7.4)
@@ -117,6 +127,7 @@ GEM
       racc (~> 1.4)
     nokogiri (1.18.9-x86_64-linux-gnu)
       racc (~> 1.4)
+    ostruct (0.6.3)
     parallel (1.26.3)
     parser (3.3.6.0)
       ast (~> 2.4.1)
@@ -218,12 +229,13 @@ DEPENDENCIES
   appraisal
   async (>= 2.24)
   debug (~> 1.9)
-  logger
   minitest (~> 5.0)
   mocha
+  mongo (>= 2.24, < 3)
+  mongoid (>= 7.6.1, < 10)
   mysql2
   pg
-  puma (~> 7.0)
+  puma (>= 7.0, < 9)
   rdoc
   rubocop-rails-omakase
   solid_queue!

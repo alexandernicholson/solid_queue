@@ -24,11 +24,18 @@ class SolidQueue::Process < SolidQueue::Record
     # failed because of a DB issue and we still have the unpersisted value
     restore_attributes
     with_lock { touch(:last_heartbeat_at) }
-  rescue
+  rescue => error
     # touch writes the attribute before persisting; don't let a failed
     # update leave this object claiming a heartbeat that was never persisted
     restore_attributes
+    if error.is_a?(ActiveRecord::RecordNotFound)
+      raise SolidQueue::RecordNotFound, error.message
+    end
     raise
+  end
+
+  def update_metadata!(metadata)
+    update!(metadata: metadata)
   end
 
   def deregister(pruned: false)

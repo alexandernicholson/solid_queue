@@ -1,0 +1,8 @@
+source "https://rubygems.org"
+
+gem "mongo", ENV.fetch("MONGO_DRIVER_VERSION", ">= 2.24"), "< 3"
+gem "mongoid", ">= 9", "< 10", require: false
+gem "railties", ENV.fetch("RAILS_VERSION", "~> 8.1.0")
+gem "json", "< 3"
+
+gemspec path: "../"

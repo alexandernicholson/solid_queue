@@ -27,6 +27,13 @@ class UpdateGeneratorTest < Rails::Generators::TestCase
     end
   end
 
+  test "uses the configured migrations directory for a named database" do
+    run_generator %w[ --database shard_one ]
+
+    assert_migration "db/migrate_shards/add_batches_to_solid_queue.rb"
+    assert_no_directory "db/shard_one_migrate"
+  end
+
   test "skips migrations that have already been copied" do
     with_migration_template("add_batches_to_solid_queue") do
       run_generator
@@ -44,6 +51,23 @@ class UpdateGeneratorTest < Rails::Generators::TestCase
       run_generator
 
       assert_empty Dir.glob(File.join(destination_root, "db/**/*.rb"))
+    end
+  end
+
+  test "MongoDB update emits no SQL migrations" do
+    run_generator %w[ --backend mongodb ]
+
+    assert_empty Dir.glob(File.join(destination_root, "db/**/*.rb"))
+  end
+
+  test "a MongoDB update does not prevent a later SQL update in the same process" do
+    with_migration_template("add_batches_to_solid_queue") do
+      run_generator %w[ --backend mongodb ]
+      assert_empty Dir.glob(File.join(destination_root, "db/**/*.rb"))
+
+      run_generator
+
+      assert_migration "db/queue_migrate/add_batches_to_solid_queue.rb"
     end
   end
 

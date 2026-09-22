@@ -104,13 +104,14 @@ module SolidQueue
       end
 
       def warn_about_incorrectly_sized_database_pool
-        db_pool_size = SolidQueue::Record.connection_pool&.size
+        db_pool_size, setting = configured_database_pool
 
         if db_pool_size && db_pool_size < estimated_database_pool_size
           warnings.add(:base, "Warning: Solid Queue needs at least #{estimated_database_pool_size} database connections " \
-            "for the configured workers but the database connection pool is #{db_pool_size}. Increase it in `config/database.yml`")
+            "for the configured workers but the database connection pool is #{db_pool_size}. Increase it in #{setting}")
         end
-      rescue ActiveRecord::ActiveRecordError
+      rescue => error
+        raise unless unavailable_database_error?(error)
         # No usable database connection. Skip the pool-size warning in that case.
       end
 
@@ -289,6 +290,22 @@ module SolidQueue
         end
       end
 
+      def configured_database_pool
+        if SolidQueue.mongodb?
+          [ SolidQueue::Mongo.client.options[:max_pool_size], "the MongoDB client's `max_pool_size` option" ]
+        else
+          [ SolidQueue::Record.connection_pool&.size, "`config/database.yml`" ]
+        end
+      end
+
+      def unavailable_database_error?(error)
+        if SolidQueue.mongodb?
+          defined?(::Mongo::Error) && error.is_a?(::Mongo::Error)
+        else
+          defined?(::ActiveRecord::ActiveRecordError) && error.is_a?(::ActiveRecord::ActiveRecordError)
+        end
+      end
+
       def estimated_database_pool_size
         worker_pool_size = workers_options.map { |options| estimated_database_pool_size_for_worker(options) }.max
         worker_pool_size || 1
@@ -312,6 +329,8 @@ module SolidQueue
       end
 
       def fiber_jobs_release_connections_between_queries?
+        return false if SolidQueue.mongodb?
+
         ActiveRecord.gem_version >= FIBER_QUERY_SCOPED_CONNECTIONS_VERSION
       end
 

@@ -43,11 +43,21 @@ module SolidQueue::Processes
 
       def with_polling_volume
         SolidQueue.instrument(:polling) do
-          if SolidQueue.silence_polling? && ActiveRecord::Base.logger
-            ActiveRecord::Base.logger.silence { yield }
+          if SolidQueue.silence_polling?
+            silence_polling_logs { yield }
           else
             yield
           end
+        end
+      end
+
+      def silence_polling_logs(&block)
+        if SolidQueue.mongodb?
+          SolidQueue::Mongo.silence_logging(&block)
+        elsif defined?(ActiveRecord::Base) && ActiveRecord::Base.logger
+          ActiveRecord::Base.logger.silence(&block)
+        else
+          yield
         end
       end
   end

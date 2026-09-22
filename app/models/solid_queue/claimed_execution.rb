@@ -38,6 +38,18 @@ module SolidQueue
         end
       end
 
+      def release_for_process(process_id)
+        where(process_id: process_id).release_all
+      end
+
+      def fail_for_process(process_id, error)
+        where(process_id: process_id).fail_all_with(error)
+      end
+
+      def fail_orphaned(error)
+        orphaned.fail_all_with(error)
+      end
+
       def release_all
         SolidQueue.instrument(:release_many_claimed) do |payload|
           includes(:job).tap do |executions|

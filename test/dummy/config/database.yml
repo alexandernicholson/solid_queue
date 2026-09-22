@@ -21,19 +21,21 @@ default: &default
 default: &default
   adapter: postgresql
   encoding: unicode
-  username: postgres
+  username: <%= ENV.fetch("POSTGRES_USER", "postgres").to_json %>
+  password: <%= ENV["POSTGRES_PASSWORD"].to_json %>
   pool: 20
-  host: "127.0.0.1"
-  port: 55432
+  host: <%= ENV.fetch("POSTGRES_HOST", "127.0.0.1").to_json %>
+  port: <%= ENV.fetch("POSTGRES_PORT", "55432") %>
   gssencmode: disable # https://github.com/ged/ruby-pg/issues/311
 
 <% else %>
 default: &default
   adapter: mysql2
-  username: root
+  username: <%= ENV.fetch("MYSQL_USER", "root").to_json %>
+  password: <%= ENV["MYSQL_PASSWORD"].to_json %>
   pool: 20
-  host: "127.0.0.1"
-  port: 33066
+  host: <%= ENV.fetch("MYSQL_HOST", "127.0.0.1").to_json %>
+  port: <%= ENV.fetch("MYSQL_PORT", "33066") %>
 <% end %>
 
 development:

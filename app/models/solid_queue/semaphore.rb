@@ -18,6 +18,10 @@ module SolidQueue
         Proxy.signal_all(jobs)
       end
 
+      def expire(batch_size:)
+        expired.in_batches(of: batch_size, &:delete_all)
+      end
+
       # Requires a unique index on key
       def create_unique_by(attributes)
         if supports_insert_conflict_target?
