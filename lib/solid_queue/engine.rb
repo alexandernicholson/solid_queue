@@ -56,7 +56,13 @@ module SolidQueue
       ActiveSupport.on_load :active_job do
         include ActiveJob::ConcurrencyControls
 
-        include ActiveJob::BatchId
+        if defined?(::ActiveRecord::Railtie)
+          ActiveSupport.on_load :active_record do
+            ActiveJob::Base.include ActiveJob::BatchId
+          end
+        else
+          include ActiveJob::BatchId
+        end
       end
     end
 
