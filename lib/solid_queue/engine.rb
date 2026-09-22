@@ -10,13 +10,8 @@ module SolidQueue
 
     config.solid_queue = ActiveSupport::OrderedOptions.new
 
-    initializer "solid_queue.config", after: :load_environment_config, before: :set_load_path do
-      config.solid_queue.each do |name, value|
-        SolidQueue.public_send("#{name}=", value)
-      end
-    end
-
-    initializer "solid_queue.persistence", after: "solid_queue.config", before: :set_load_path do
+    initializer "solid_queue.persistence", after: :load_environment_config, before: :set_load_path do
+      SolidQueue.backend = config.solid_queue.backend if config.solid_queue.key?(:backend)
       SolidQueue.validate_backend!
 
       if SolidQueue.mongodb?
@@ -25,7 +20,13 @@ module SolidQueue
         paths["app/models"] = model_root
         config.autoload_paths << model_root
         config.eager_load_paths << model_root
-        SolidQueue::Mongo
+        require "solid_queue/mongo"
+      end
+    end
+
+    initializer "solid_queue.config" do
+      config.solid_queue.each do |name, value|
+        SolidQueue.public_send("#{name}=", value)
       end
     end
 

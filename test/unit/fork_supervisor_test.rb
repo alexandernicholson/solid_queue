@@ -200,6 +200,27 @@ class ForkSupervisorTest < ActiveSupport::TestCase
     end
   end
 
+  test "fail executions orphaned after the supervisor booted" do
+    old_alive_threshold, SolidQueue.process_alive_threshold = SolidQueue.process_alive_threshold, 1.second
+    pid = run_supervisor_as_fork(workers: [ { queues: "background", polling_interval: 10, processes: 1 } ])
+    wait_for_registered_processes(2)
+
+    StoreResultJob.set(queue: :new_queue).perform_later(1)
+    process = SolidQueue::Process.register(kind: "Worker", pid: 42, name: "worker-late")
+    SolidQueue::ReadyExecution.claim("*", 1, process.id)
+    process.delete
+
+    wait_while_with_timeout(5.seconds) { skip_active_record_query_cache { SolidQueue::ClaimedExecution.any? } }
+
+    skip_active_record_query_cache do
+      assert_equal 0, SolidQueue::ClaimedExecution.count
+      assert_equal 1, SolidQueue::FailedExecution.count
+    end
+  ensure
+    terminate_process(pid) if pid
+    SolidQueue.process_alive_threshold = old_alive_threshold
+  end
+
   test "fail orphaned executions by releasing their concurrency locks" do
     result = JobResult.create!(queue_name: "default", status: "seq: ")
     4.times { |i| ThrottledUpdateResultJob.set(queue: :new_queue).perform_later(result) }

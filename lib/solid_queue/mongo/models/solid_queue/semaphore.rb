@@ -19,7 +19,11 @@ module SolidQueue
 
           collection.update_one(
             { key: job.concurrency_key },
-            { "$setOnInsert" => { value: limit, created_at: now, updated_at: now, expires_at: expiry } },
+            {
+              "$setOnInsert" => { value: limit, created_at: now, expires_at: expiry },
+              "$set" => { updated_at: now },
+              "$inc" => { version: 1 }
+            },
             upsert: true,
             **SolidQueue::Mongo.session_options
           )

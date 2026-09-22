@@ -31,7 +31,7 @@ namespace :solid_queue do
 
   def solid_queue_backend
     ENV.fetch("SOLID_QUEUE_BACKEND") do
-      SolidQueue.respond_to?(:backend) ? SolidQueue.backend.to_s : "active_record"
+      (Rails.application.config.solid_queue.backend || SolidQueue.backend).to_s
     end
   end
 end

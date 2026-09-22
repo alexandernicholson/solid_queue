@@ -32,6 +32,10 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
     warn formatted_event(event, action: "MongoDB pool checkout waited", **event.payload)
   end
 
+  def mongo_command(event)
+    debug formatted_event(event, action: "MongoDB command", **event.payload.compact)
+  end
+
   def release_many_claimed(event)
     info formatted_event(event, action: "Release claimed jobs", **event.payload.slice(:size))
   end

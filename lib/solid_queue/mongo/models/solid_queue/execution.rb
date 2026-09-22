@@ -9,6 +9,22 @@ module SolidQueue
         name.demodulize.sub(/Execution\z/, "").underscore.to_sym
       end
 
+      def find(id)
+        find_by(id: SolidQueue::Mongo.id!(id)) || raise_record_not_found(id)
+      end
+
+      def find_by(filter = {})
+        super(scoped(filter))
+      end
+
+      def count(filter = {})
+        super(scoped(filter))
+      end
+
+      def delete_all(filter = {})
+        super(scoped(filter))
+      end
+
       def create_all_from_jobs(jobs)
         ids = Array(jobs).map(&:bson_id)
         return [] if ids.empty?
@@ -51,6 +67,10 @@ module SolidQueue
       end
 
       private
+        def scoped(filter)
+          filter.merge(state: type.to_s)
+        end
+
         def discard_ids(ids, expected_state:)
           discarded_jobs = []
           transaction(operation: "discard_jobs") do

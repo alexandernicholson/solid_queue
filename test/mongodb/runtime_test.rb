@@ -115,6 +115,16 @@ class MongoRuntimeTest < MongoTestCase
     assert_nil runtime_results.find(token: "orphan", event: "started").first
   end
 
+  def test_supervisor_maintenance_fails_claims_orphaned_after_boot
+    active_job = enqueue_runtime_job("late-orphan")
+    SolidQueue::ReadyExecution.claim([ "runtime" ], 1, BSON::ObjectId.new)
+    supervisor = SolidQueue::Supervisor.allocate
+
+    supervisor.send(:run_maintenance)
+
+    assert_equal "failed", SolidQueue::Job.find_by_active_job_id(active_job.job_id).state
+  end
+
   def test_registration_that_wins_the_orphan_scan_race_preserves_the_claim
     active_job = enqueue_runtime_job("registered-owner")
     owner_id = BSON::ObjectId.new
@@ -165,7 +175,7 @@ class MongoRuntimeTest < MongoTestCase
     assert stale_claim.release
     current_claim = SolidQueue::ReadyExecution.claim([ "runtime" ], 1, second_process.id).fetch(0)
 
-    refute stale_claim.failed_with(RuntimeError.new("stale owner"))
+    assert_not stale_claim.failed_with(RuntimeError.new("stale owner"))
     current = SolidQueue::Job.find_by_active_job_id(active_job.job_id)
     assert_equal "claimed", current.state
     assert_equal second_process.id, current.process_id
@@ -213,7 +223,7 @@ class MongoRuntimeTest < MongoTestCase
 
     assert status.success?, "CLI failed:\n#{stdout}\n#{stderr}"
     assert_includes stdout, "Solid Queue configuration is valid."
-    refute_includes stderr, "Active Record was loaded"
+    assert_not_includes stderr, "Active Record was loaded"
   end
 
   private

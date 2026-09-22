@@ -2,6 +2,13 @@
 
 require_relative "test_helper"
 
+class MongoLimitedFaultJob < ActiveJob::Base
+  limits_concurrency key: ->(key) { key }, to: 1, duration: 5.minutes
+
+  def perform(*)
+  end
+end
+
 class MongoFaultsTest < MongoTestCase
   FAULT_APP_NAME = "solid-queue-fault-tests"
 
@@ -162,7 +169,7 @@ class MongoFaultsTest < MongoTestCase
 
   def test_blocked_commit_is_bounded_by_transaction_deadline_and_emits_deadline_telemetry
     previous_timeout = SolidQueue.mongo_transaction_timeout
-    SolidQueue.mongo_transaction_timeout = 0.05
+    SolidQueue.mongo_transaction_timeout = 0.3
     elapsed = nil
     events = []
 
@@ -182,6 +189,7 @@ class MongoFaultsTest < MongoTestCase
               { _id: BSON::ObjectId.new, bounded: true },
               **SolidQueue::Mongo.session_options
             )
+            sleep 0.4
           end
         ensure
           # Disabling a failpoint waits for its blocked server thread to exit.
@@ -191,13 +199,88 @@ class MongoFaultsTest < MongoTestCase
       end
     end
 
-    assert_operator elapsed, :<, 1.0, "transaction took #{elapsed.round(3)}s despite a 50ms deadline"
+    assert_operator elapsed, :<, 2.0, "commit took #{elapsed.round(3)}s despite a 300ms deadline"
     assert_equal "fault_blocked_commit", error.operation
     deadline_event = events.find { |event| event.payload[:deadline_exceeded] }
     assert deadline_event, "expected deadline-exceeded transaction telemetry"
     assert_equal "fault_blocked_commit", deadline_event.payload[:operation]
     assert_equal :commit, deadline_event.payload[:phase]
     assert_includes [ "UnknownTransactionCommitResult", "DeadlineExceeded" ], deadline_event.payload[:error_label]
+  ensure
+    SolidQueue.mongo_transaction_timeout = previous_timeout if defined?(previous_timeout)
+  end
+
+  def test_caller_owned_transaction_retries_a_transient_enqueue_error
+    active_job = MongoRaceJob.new("caller-owned-retry")
+    attempts = 0
+
+    with_fail_command(failCommands: [ "insert" ], errorCode: 112, errorLabels: [ "TransientTransactionError" ]) do
+      SolidQueue::Mongo.client.start_session do |session|
+        session.with_transaction do
+          attempts += 1
+          SolidQueue.with_mongo_session(session) { SolidQueue::Job.enqueue(active_job) }
+        end
+      end
+    end
+
+    assert_equal 2, attempts
+    assert_equal 1, jobs.count_documents(active_job_id: active_job.job_id)
+    assert active_job.successfully_enqueued?
+  end
+
+  def test_a_transient_conflict_while_dispatching_a_limited_job_does_not_redispatch_the_others
+    keys = 5.times.map { |number| "dispatch-#{number}" }
+    keys.each { |key| MongoLimitedFaultJob.set(wait: 1.second).perform_later(key) }
+    jobs.update_many({ state: "scheduled" }, { "$set" => { scheduled_at: 1.minute.ago } })
+    waits = 0
+    original_wait = SolidQueue::Semaphore.method(:wait)
+    fault = method(:with_fail_command)
+    SolidQueue::Semaphore.singleton_class.define_method(:wait) do |job|
+      waits += 1
+      if waits == 4
+        fault.call(failCommands: [ "update" ], errorCode: 112, errorLabels: [ "TransientTransactionError" ]) { original_wait.call(job) }
+      else
+        original_wait.call(job)
+      end
+    end
+
+    SolidQueue::ScheduledExecution.dispatch_next_batch(10)
+
+    assert_equal 5, jobs.count_documents(state: "ready")
+    assert_equal 6, waits
+  ensure
+    SolidQueue::Semaphore.singleton_class.define_method(:wait, original_wait) if original_wait
+  end
+
+  def test_an_owner_that_loses_its_claim_during_a_retried_finalize_reports_failure
+    MongoRaceJob.perform_later("lost-during-retry")
+    claim = SolidQueue::ReadyExecution.claim([ "default" ], 1, BSON::ObjectId.new).fetch(0)
+    attempts = 0
+    owned_filter = claim.send(:ownership_filter)
+    claim.define_singleton_method(:ownership_filter) do
+      attempts += 1
+      attempts == 1 ? owned_filter : owned_filter.merge(claim_token: "taken by a newer owner")
+    end
+
+    finalized = with_fail_command(failCommands: [ "commitTransaction" ], errorCode: 112, errorLabels: [ "TransientTransactionError" ]) do
+      claim.failed_with(RuntimeError.new("stale"))
+    end
+
+    assert_equal 2, attempts
+    assert_not finalized
+    assert_equal "claimed", jobs.find(_id: claim.bson_id).first.fetch("state")
+  end
+
+  def test_enqueue_reports_a_transaction_deadline_as_an_enqueue_error
+    previous_timeout = SolidQueue.mongo_transaction_timeout
+    SolidQueue.mongo_transaction_timeout = 0.05
+    active_job = MongoLimitedFaultJob.new("deadline")
+
+    with_fail_command(failCommands: [ "commitTransaction" ], blockConnection: true, blockTimeMS: 500) do
+      assert_raises(SolidQueue::Job::EnqueueError) { SolidQueue::Job.enqueue(active_job) }
+    end
+
+    assert_not active_job.successfully_enqueued?
   ensure
     SolidQueue.mongo_transaction_timeout = previous_timeout if defined?(previous_timeout)
   end

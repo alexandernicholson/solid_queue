@@ -18,25 +18,17 @@ module SolidQueue
       end
 
       def dispatch_next_batch(batch_size)
-        candidate_count, dispatched_count = transaction(operation: "dispatch_scheduled") do
-          now = Time.current
-          documents = collection.find(
-            { state: "scheduled", scheduled_at: { "$lte" => now } },
-            **SolidQueue::Mongo.session_options
-          ).sort(scheduled_at: 1, priority: 1, _id: 1).limit(batch_size).to_a
-
-          jobs = documents.map { |document| Job.from_document(document) }
-          [ documents.size, Job.dispatch_all(jobs).size ]
-        end
-        return 0 if candidate_count.zero?
+        jobs = collection.find(
+          { state: "scheduled", scheduled_at: { "$lte" => Time.current } },
+          **SolidQueue::Mongo.session_options
+        ).sort(scheduled_at: 1, priority: 1, _id: 1).limit(batch_size).map { |document| Job.from_document(document) }
+        return 0 if jobs.empty?
 
         SolidQueue.instrument(:dispatch_scheduled, batch_size: batch_size) do |payload|
-          payload[:size] = dispatched_count
+          without_limit, with_limit = jobs.partition { |job| !job.concurrency_limited? }
+          dispatched = transaction(operation: "dispatch_scheduled") { ReadyExecution.create_all_from_jobs(without_limit).size }
+          payload[:size] = dispatched + with_limit.count { |job| %w[ready blocked].include?(job.dispatch) }
         end
-      end
-
-      def count
-        collection.count_documents({ state: "scheduled" }, **SolidQueue::Mongo.session_options)
       end
 
       def any?

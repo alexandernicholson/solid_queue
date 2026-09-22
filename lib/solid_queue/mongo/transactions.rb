@@ -41,6 +41,16 @@ module SolidQueue
         end
       end
 
+      def transient_error_for_caller_transaction(error)
+        return unless context[:external_session] && !context[:owned_transaction]
+
+        while error
+          return error if error.is_a?(::Mongo::Error) && retryable_label?(error, TRANSIENT_TRANSACTION_ERROR)
+
+          error = error.cause
+        end
+      end
+
       def track_transaction_record(record)
         records = context[:transaction_records]
         return unless records
@@ -63,22 +73,13 @@ module SolidQueue
             previous_owned = context[:owned_transaction]
             previous_callbacks = context[:after_commit]
             previous_records = context[:transaction_records]
-            previous_deadline = context[:deadline]
             begin
-              timeout_ms = remaining_timeout_ms(deadline, operation, attempt)
-              session.start_transaction(
-                read_concern: { level: :snapshot },
-                write_concern: { w: :majority },
-                timeout_ms: timeout_ms,
-                max_commit_time_ms: timeout_ms
-              )
+              session.start_transaction(read_concern: { level: :snapshot }, write_concern: { w: :majority })
               context[:owned_transaction] = true
               context[:after_commit] = callbacks
               context[:transaction_records] = records
-              context[:deadline] = deadline
               result = yield session
-              ensure_before_deadline!(deadline, operation, attempt)
-              commit_with_retry(session, operation, attempt, deadline)
+              commit_with_retry(session, operation, attempt, monotonic_now + transaction_timeout)
               committed_result = result
               committed_callbacks = callbacks
               break
@@ -97,7 +98,6 @@ module SolidQueue
               context[:owned_transaction] = previous_owned
               context[:after_commit] = previous_callbacks
               context[:transaction_records] = previous_records
-              context[:deadline] = previous_deadline
             end
           end
 
@@ -111,8 +111,7 @@ module SolidQueue
           commit_attempt = 0
           loop do
             commit_attempt += 1
-            ensure_before_deadline!(deadline, operation, commit_attempt, transaction_attempt: transaction_attempt, phase: :commit)
-            session.commit_transaction(timeout_ms: remaining_timeout_ms(deadline, operation, commit_attempt))
+            session.commit_transaction(timeout_ms: remaining_commit_timeout_ms(deadline, operation, commit_attempt, transaction_attempt))
             return
           rescue Exception => error
             raise if error.is_a?(TransactionDeadlineExceeded)
@@ -141,17 +140,11 @@ module SolidQueue
             transaction_attempt: transaction_attempt, phase: phase, deadline_exceeded: false, error: error)
         end
 
-        def remaining_timeout_ms(deadline, operation, attempt)
+        def remaining_commit_timeout_ms(deadline, operation, commit_attempt, transaction_attempt)
           remaining = ((deadline - monotonic_now) * 1000).floor
           return remaining if remaining.positive?
 
-          raise_deadline(operation, attempt)
-        end
-
-        def ensure_before_deadline!(deadline, operation, attempt, transaction_attempt: attempt, phase: :transaction)
-          return if monotonic_now < deadline
-
-          raise_deadline(operation, attempt, transaction_attempt: transaction_attempt, phase: phase)
+          raise_deadline(operation, commit_attempt, transaction_attempt: transaction_attempt, phase: :commit)
         end
 
         def raise_deadline(operation, attempt, transaction_attempt: attempt, phase: :transaction, cause: nil)

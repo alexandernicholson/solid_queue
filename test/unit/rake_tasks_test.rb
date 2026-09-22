@@ -47,4 +47,36 @@ class RakeTasksTest < ActiveSupport::TestCase
     assert_match "Solid Queue configuration is invalid:", err
     assert_match "broken", err
   end
+
+  test "solid_queue:update generates for the backend selected in application configuration" do
+    with_application_backend(:mongodb) do
+      Rails::Command.expects(:invoke).with(:generate, [ "solid_queue:update", "--backend=mongodb" ])
+
+      @rake["solid_queue:update"].invoke
+    end
+  end
+
+  test "SOLID_QUEUE_BACKEND overrides the configured backend for solid_queue:install" do
+    with_application_backend(:mongodb) do
+      Rails::Command.expects(:invoke).with(:generate, [ "solid_queue:install", "--backend=active_record" ])
+
+      with_env("SOLID_QUEUE_BACKEND" => "active_record") { @rake["solid_queue:install"].invoke }
+    end
+  end
+
+  private
+    def with_application_backend(backend)
+      Rails.application.config.solid_queue.backend = backend
+      yield
+    ensure
+      Rails.application.config.solid_queue.delete(:backend)
+    end
+
+    def with_env(values)
+      previous = values.keys.index_with { |key| ENV[key] }
+      values.each { |key, value| ENV[key] = value }
+      yield
+    ensure
+      previous.each { |key, value| ENV[key] = value }
+    end
 end

@@ -52,7 +52,8 @@ module SolidQueue
         batch_executions: [
           { key: { job_id: 1 }, name: "batch_execution_job", unique: true },
           { key: { batch_id: 1, created_at: 1 }, name: "batch_execution_members" },
-          { key: { batch_id: 1, active_job_id: 1 }, name: "batch_logical_jobs" }
+          { key: { batch_id: 1, active_job_id: 1 }, name: "batch_logical_jobs" },
+          { key: { batch_id: 1 }, name: "batch_execution_attempts", partial_filter_expression: { kind: "attempt" } }
         ]
       }.freeze
 

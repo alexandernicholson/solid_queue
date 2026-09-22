@@ -172,7 +172,7 @@ class PersistenceBenchmark
 
       timings = results.flat_map(&:last).sort
       sample(iteration, "claim_#{batch_size}", ids.length, duration,
-        p99_claim_ms: timings.fetch([(timings.size * 0.99).ceil - 1, 0].max),
+        p99_claim_ms: timings.fetch([ (timings.size * 0.99).ceil - 1, 0 ].max),
         claim_calls: timings.size, transaction_retries: @retries - before_retries)
     end
 

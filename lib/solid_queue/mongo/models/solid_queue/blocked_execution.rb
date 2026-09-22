@@ -72,10 +72,6 @@ module SolidQueue
         end
       end
 
-      def count
-        collection.count_documents({ state: "blocked" }, **SolidQueue::Mongo.session_options)
-      end
-
       def any?
         count.positive?
       end

@@ -80,11 +80,7 @@ module SolidQueue
       end
 
       def session_options
-        options = current_session ? { session: current_session } : {}
-        if (deadline = context[:deadline])
-          options[:timeout_ms] = [ ((deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)) * 1000).ceil, 1 ].max
-        end
-        options
+        current_session ? { session: current_session } : {}
       end
 
       def after_commit(&block)
@@ -219,12 +215,10 @@ module SolidQueue
       end
 
       def clone_client_for_fork(inherited_client)
-        addresses_or_uri = inherited_client.cluster.options[:srv_uri]
-        addresses_or_uri ||= inherited_client.cluster.addresses.map(&:to_s)
         options = inherited_client.options.dup
         options[:database] ||= inherited_client.database.name
-        ::Mongo::Client.new(addresses_or_uri, options)
-      rescue *DRIVER_ERRORS, ArgumentError => error
+        ::Mongo::Client.new(fork_seeds_for(inherited_client), options)
+      rescue *DRIVER_ERRORS, ArgumentError, NoMethodError => error
         raise ConfigurationError, "Unable to create a fork-safe MongoDB client: #{error.message}"
       end
 
@@ -233,6 +227,14 @@ module SolidQueue
       end
 
       private
+        def fork_seeds_for(inherited_client)
+          if (srv_hostname = inherited_client.cluster.options[:srv_uri]&.query_hostname)
+            "mongodb+srv://#{srv_hostname}"
+          else
+            inherited_client.cluster.addresses.map(&:to_s)
+          end
+        end
+
         def context=(value)
           ActiveSupport::IsolatedExecutionState[CONTEXT_KEY] = value
         end
@@ -259,19 +261,9 @@ module SolidQueue
           lifecycle_lock.synchronize do
             if @client && @client_pid != pid
               inherited_client = @client
-              replacements = if defined?(SolidQueue::MongoidIntegration)
-                SolidQueue::MongoidIntegration.after_fork!
-              else
-                {}
-              end
               Monitoring.forget!(inherited_client)
-              if replacements.key?(inherited_client.__id__)
-                @client = replacements.fetch(inherited_client.__id__)
-                @owns_client = false
-              else
-                @client = clone_client_for_fork(inherited_client)
-                @owns_client = true
-              end
+              @client = clone_client_for_fork(inherited_client)
+              @owns_client = true
               @client_pid = pid
               @client_source = source
               @collections = nil

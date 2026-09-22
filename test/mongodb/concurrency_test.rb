@@ -106,6 +106,35 @@ class MongoNativeConcurrencyTest < MongoTestCase
     assert_equal 0, SolidQueue::Semaphore.find_by(key: key).value
   end
 
+  test "a slot released while an enqueue is blocking promotes that job" do
+    holder = SolidQueue::Job.find(MongoNativeSingleSlotJob.perform_later("skew").provider_job_id)
+    waited = Queue.new
+    resume = Queue.new
+    original_wait = SolidQueue::Semaphore.method(:wait)
+    SolidQueue::Semaphore.singleton_class.define_method(:wait) do |job|
+      original_wait.call(job).tap do |acquired|
+        next if acquired || Thread.current[:skew_released]
+
+        waited << true
+        resume.pop(timeout: 1)
+      end
+    end
+
+    releaser = Thread.new do
+      waited.pop
+      Thread.current[:skew_released] = true
+      holder.unblock_next_blocked_job
+      resume << true
+    end
+    blocked = MongoNativeSingleSlotJob.perform_later("skew")
+    releaser.join
+
+    assert SolidQueue::Job.find(blocked.provider_job_id).ready?
+    assert_equal 0, SolidQueue::Semaphore.find_by(key: holder.concurrency_key).value
+  ensure
+    SolidQueue::Semaphore.singleton_class.define_method(:wait, original_wait) if original_wait
+  end
+
   private
     def job_count(state:)
       SolidQueue::Mongo.collection(:jobs).count_documents(state: state)

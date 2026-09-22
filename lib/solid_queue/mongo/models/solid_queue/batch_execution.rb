@@ -80,9 +80,20 @@ module SolidQueue
 
       def count_for_batch(batch_id)
         collection.count_documents(
-          { batch_id: SolidQueue::Mongo.id!(batch_id), kind: { "$ne" => "logical" } },
+          { batch_id: SolidQueue::Mongo.id!(batch_id), kind: "attempt" },
           **SolidQueue::Mongo.session_options
         )
+      end
+
+      def outstanding_for_batch?(batch_id)
+        outstanding_query(batch_id).first.present?
+      end
+
+      def outstanding_query(batch_id)
+        collection.find(
+          { batch_id: SolidQueue::Mongo.id!(batch_id), kind: "attempt" },
+          **SolidQueue::Mongo.session_options
+        ).projection(_id: 1).limit(1)
       end
 
       def for_batch(batch_id)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "mocha/minitest"
 
 class MongoNativeBatchJob < ActiveJob::Base
   def perform(*)
@@ -43,6 +44,16 @@ class MongoNativeBatchTest < MongoTestCase
     super
     MongoNativeRetryOnceJob.attempts = Hash.new(0)
     MongoNativeBatchCallbackJob.fail_enqueues = false
+  end
+
+  test "checking a batch for outstanding attempts examines at most one indexed marker" do
+    batch = SolidQueue::Batch.enqueue { 20.times { MongoNativeBatchJob.perform_later } }
+
+    assert SolidQueue::BatchExecution.outstanding_for_batch?(batch.id)
+
+    explained = SolidQueue::BatchExecution.outstanding_query(batch.id).explain
+    assert_includes explained.dig("queryPlanner", "winningPlan").to_s, "batch_execution_attempts"
+    assert_operator explained.dig("executionStats", "totalDocsExamined"), :<=, 1
   end
 
   test "manual retry of a finished failed batch does not reopen its accounting" do
@@ -114,7 +125,7 @@ class MongoNativeBatchTest < MongoTestCase
 
       batch.reload
       if addition_result == :accepted
-        refute batch.finished?, "accepted work must keep the batch open"
+        assert_not batch.finished?, "accepted work must keep the batch open"
         assert_equal 1, batch.pending_jobs
         batch.jobs.find(&:ready?).finished!
         assert batch.reload.finished?
@@ -138,7 +149,7 @@ class MongoNativeBatchTest < MongoTestCase
 
     assert_equal "finished", SolidQueue::Job.find(terminal_job_id).state
     assert_equal 0, batch.reload.pending_jobs
-    refute batch.finished?, "callback enqueue and batch finish must roll back without undoing the job outcome"
+    assert_not batch.finished?, "callback enqueue and batch finish must roll back without undoing the job outcome"
     assert_equal 0, SolidQueue::Mongo.collection(:jobs).count_documents(class_name: "MongoNativeBatchCallbackJob")
 
     MongoNativeBatchCallbackJob.fail_enqueues = false
@@ -169,6 +180,26 @@ class MongoNativeBatchTest < MongoTestCase
     assert batch.reload.finished?
     assert_equal 0, batch.pending_jobs
     assert_equal 1, batch.completed_jobs
+  end
+
+  test "the stalled sweep finishes a batch queued behind more than a page of active batches" do
+    3.times { SolidQueue::Batch.enqueue { MongoNativeBatchJob.perform_later } }
+    stalled = SolidQueue::Batch.enqueue { MongoNativeBatchJob.perform_later("stalled") }
+    SolidQueue::Mongo.collection(:batch_executions).delete_many(batch_id: stalled.bson_id, kind: "attempt")
+
+    SolidQueue::Batch.sweep_stalled(stalled_for: 1.hour, batch_size: 2)
+
+    assert stalled.reload.finished?
+  end
+
+  test "a committed batch stays persisted when starting it fails" do
+    batch = SolidQueue::Batch.new
+    SolidQueue::Batch.any_instance.stubs(:start).raises(::Mongo::Error::SocketError, "lost after commit")
+
+    assert_raises(::Mongo::Error::SocketError) { batch.enqueue { MongoNativeBatchJob.perform_later } }
+
+    assert batch.persisted?
+    assert_equal 1, SolidQueue::Batch.collection.count_documents(_id: batch.bson_id)
   end
 
   test "retention removes completed batches and all logical accounting markers" do

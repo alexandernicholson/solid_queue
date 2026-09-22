@@ -27,11 +27,7 @@ module SolidQueue::Processes
 
       def create_fork(&block)
         fork do
-          if SolidQueue.mongodb?
-            SolidQueue::Mongo.after_fork!
-          elsif defined?(SolidQueue::MongoidIntegration)
-            SolidQueue::MongoidIntegration.after_fork!
-          end
+          SolidQueue.after_fork!
           register_signal_handlers
           block.call
 

@@ -1,0 +1,3 @@
+# frozen_string_literal: true
+
+load ENV["SOLID_QUEUE_TEST_INITIALIZER"] if ENV["SOLID_QUEUE_TEST_INITIALIZER"]

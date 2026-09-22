@@ -5,6 +5,22 @@ require_relative "test_helper"
 class MongoTransactionSessionTest < MongoTestCase
   class AbortTransaction < StandardError; end
 
+  def test_a_body_that_outlasts_the_retry_deadline_still_commits
+    previous_timeout = SolidQueue.mongo_transaction_timeout
+    SolidQueue.mongo_transaction_timeout = 0.2
+    collection = SolidQueue::Mongo.collection(:jobs)
+
+    SolidQueue::Mongo.transaction(operation: "slow_body") do
+      collection.insert_one({ active_job_id: "slow-body" }, **SolidQueue::Mongo.session_options)
+      sleep 0.4
+      collection.insert_one({ active_job_id: "slow-body" }, **SolidQueue::Mongo.session_options)
+    end
+
+    assert_equal 2, collection.count_documents(active_job_id: "slow-body")
+  ensure
+    SolidQueue.mongo_transaction_timeout = previous_timeout
+  end
+
   def test_mongo_transaction_rolls_back_writes_made_with_its_session
     collection = SolidQueue::Mongo.collection(:jobs)
 

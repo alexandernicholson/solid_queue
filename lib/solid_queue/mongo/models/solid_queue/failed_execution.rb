@@ -53,6 +53,7 @@ module SolidQueue
       retried = false
       SolidQueue.instrument(:retry, job_id: job_id) do
         transaction(operation: "retry_failed_job") do
+          retried = false
           payload = arguments.deep_dup
           payload["executions"] = 0
           payload["exception_executions"] = {}

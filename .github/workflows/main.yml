@@ -19,39 +19,23 @@ jobs:
           bundle exec rubocop --parallel
 
   tests:
-    name: Tests
+    name: Active Record / ${{ matrix.lane }} / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        ruby-version:
-        - 3.2
-        - 3.3
-        - 3.4
-        - 4.0
-        database: [ mysql, postgres, sqlite ]
-        gemfile: [ rails_7_1, rails_7_2, rails_8_0, rails_8_1, rails_main ]
-        exclude:
-          - ruby-version: "3.2"
-            gemfile: rails_main
-    services:
-      mysql:
-        image: mysql:8.0.31
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-        ports:
-          - 33066:3306
-        options: --health-cmd "mysql -h localhost -e \"select now()\"" --health-interval 1s --health-timeout 5s --health-retries 30
-      postgres:
-        image: postgres:15.1
-        env:
-          POSTGRES_HOST_AUTH_METHOD: "trust"
-        ports:
-          - 55432:5432
+        include:
+          - lane: pinned
+            ruby-version: "4.0.2"
+            rails-version: "8.0.5.1"
+          - lane: latest
+            ruby-version: "4.0.7"
+            rails-version: "8.1.3.1"
     env:
-      TARGET_DB: ${{ matrix.database }}
-      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+      TARGET_DB: sqlite
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/sql.gemfile
+      RAILS_VERSION: ${{ matrix.rails-version }}
       RAILS_ENV: test
     steps:
       - name: Checkout code
@@ -62,9 +46,6 @@ jobs:
           ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true
           cache-version: 1
-      - name: Update to latest Rails
-        run: |
-          bundle update railties
       - name: Setup test database
         run: |
           bin/rails db:setup
@@ -74,39 +55,55 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: logs-${{ matrix.database }}-${{ matrix.gemfile }}-ruby${{ matrix.ruby-version }}-attempt${{ github.run_attempt }}
+          name: logs-${{ matrix.lane }}-attempt${{ github.run_attempt }}
           path: |
             test/dummy/log/test.log
           if-no-files-found: ignore
           retention-days: 30
 
   mongodb-tests:
-    name: MongoDB / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }}
+    name: MongoDB / ${{ matrix.lane }} / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }} / mongo ${{ matrix.mongo-driver-version }} / Mongoid ${{ matrix.mongoid-version }} / MongoDB ${{ matrix.mongodb-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        ruby-version:
-          - "3.2"
-          - "3.3"
-          - "3.4"
-          - "4.0"
-        rails-version: [ "~> 7.1.0", "~> 7.2.0", "~> 8.0.0", "~> 8.1.0" ]
-        mongo-driver-version: [ "~> 2.24.0", "~> 2.26.0" ]
+        include:
+          - lane: pinned
+            ruby-version: "4.0.2"
+            rails-version: "8.0.5.1"
+            mongo-driver-version: "2.26.0"
+            mongoid-version: "7.6.1"
+            mongodb-version: "8.0"
+          - lane: latest
+            ruby-version: "4.0.7"
+            rails-version: "8.1.3.1"
+            mongo-driver-version: "2.26.0"
+            mongoid-version: "9.1.1"
+            mongodb-version: "8.3"
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/mongodb.gemfile
       MONGODB_URI: mongodb://127.0.0.1:27017/solid_queue_test?replicaSet=rs0&appName=solid-queue-fault-tests
       MONGODB_FAULT_TESTS: "1"
+      MONGODB_STANDALONE_URI: mongodb://127.0.0.1:27018/solid_queue_standalone_test?directConnection=true
       RAILS_VERSION: ${{ matrix.rails-version }}
       MONGO_DRIVER_VERSION: ${{ matrix.mongo-driver-version }}
+      MONGOID_VERSION: ${{ matrix.mongoid-version }}
+      MONGOID_GIT: ${{ matrix.lane == 'pinned' && vars.MONGOID_GIT || '' }}
+      MONGOID_REF: ${{ matrix.lane == 'pinned' && vars.MONGOID_REF || '' }}
       RAILS_ENV: test
     steps:
+      - name: Check Mongoid source
+        if: ${{ matrix.lane == 'pinned' && env.MONGOID_GIT == '' }}
+        run: |
+          echo "::error::Set the MONGOID_GIT and MONGOID_REF repository variables to a Mongoid 7.6.1 source that supports Rails 8.0"
+          exit 1
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Start MongoDB replica set
         run: |
-          docker run --detach --name solid-queue-mongodb --publish 127.0.0.1:27017:27017 mongo:8.0 mongod --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
+          docker run --detach --name solid-queue-mongodb --publish 127.0.0.1:27017:27017 mongo:${{ matrix.mongodb-version }} mongod --replSet rs0 --bind_ip_all --setParameter enableTestCommands=1
+          docker run --detach --name solid-queue-mongodb-standalone --publish 127.0.0.1:27018:27017 mongo:${{ matrix.mongodb-version }} mongod --bind_ip_all
           for attempt in $(seq 1 60); do
             if docker exec solid-queue-mongodb mongosh --quiet --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)'; then
               break

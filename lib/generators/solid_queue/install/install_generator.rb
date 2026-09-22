@@ -26,14 +26,11 @@ class SolidQueue::InstallGenerator < Rails::Generators::Base
     pathname = Pathname(destination_root).join("config/environments/production.rb")
 
     gsub_file pathname, /\n\s*config\.solid_queue\.(?:connects_to|backend)\s+=.*\n/, "\n", verbose: false
-    replacement = +"  config.active_job.queue_adapter = :solid_queue\n"
-    replacement << if mongodb?
-      "  config.solid_queue.backend = :mongodb\n"
-    else
-      "  config.solid_queue.connects_to = { database: { writing: :queue } }\n"
-    end
+    replacement = +"config.active_job.queue_adapter = :solid_queue\n"
+    replacement << "  config.solid_queue.connects_to = { database: { writing: :queue } }\n" unless mongodb?
 
     gsub_file pathname, /(# )?config\.active_job\.queue_adapter\s+=.*\n/, replacement
+    environment "config.solid_queue.backend = :mongodb" if mongodb?
   end
 
   private

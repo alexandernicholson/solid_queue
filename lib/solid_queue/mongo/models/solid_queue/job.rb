@@ -74,15 +74,9 @@ module SolidQueue
         active_job.provider_job_id = job.id if job.persisted?
         active_job.successfully_enqueued = job.persisted?
         job
-      rescue EnqueueError
+      rescue EnqueueError, SolidQueue::PersistenceError, SolidQueue::Mongo::TransactionDeadlineExceeded, *SolidQueue::Mongo::DRIVER_ERRORS => error
         active_job.successfully_enqueued = false
-        raise
-      rescue SolidQueue::PersistenceError => error
-        active_job.successfully_enqueued = false
-        raise enqueue_error(error)
-      rescue *SolidQueue::Mongo::DRIVER_ERRORS => error
-        active_job.successfully_enqueued = false
-        raise enqueue_error(error)
+        raise_enqueue_error(error)
       end
 
       def enqueue_all(active_jobs)
@@ -124,15 +118,9 @@ module SolidQueue
           end
         end
         active_jobs.count(&:successfully_enqueued?)
-      rescue EnqueueError
+      rescue EnqueueError, SolidQueue::PersistenceError, SolidQueue::Mongo::TransactionDeadlineExceeded, *SolidQueue::Mongo::DRIVER_ERRORS => error
         active_jobs.each { |job| job.successfully_enqueued = false }
-        raise
-      rescue SolidQueue::PersistenceError => error
-        active_jobs.each { |job| job.successfully_enqueued = false }
-        raise enqueue_error(error)
-      rescue *SolidQueue::Mongo::DRIVER_ERRORS => error
-        active_jobs.each { |job| job.successfully_enqueued = false }
-        raise enqueue_error(error)
+        raise_enqueue_error(error)
       end
 
       def prepare_all_for_execution(jobs)
@@ -283,6 +271,15 @@ module SolidQueue
           else
             value.respond_to?(:acts_like?) && value.acts_like?(:time) ? 8 : nil
           end
+        end
+
+        def raise_enqueue_error(error)
+          raise error if error.is_a?(EnqueueError)
+          if (transient = SolidQueue::Mongo.transient_error_for_caller_transaction(error))
+            raise transient
+          end
+
+          raise enqueue_error(error)
         end
 
         def enqueue_error(error)

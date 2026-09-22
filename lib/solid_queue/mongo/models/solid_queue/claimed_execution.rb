@@ -109,6 +109,7 @@ module SolidQueue
       released = false
       SolidQueue.instrument(:release_claimed, job_id: job_id, process_id: process_id) do
         transaction(operation: "release_claimed_job") do
+          released = false
           result = self.class.collection.update_one(
             ownership_filter,
             { "$set" => { state: "ready" }, "$unset" => claim_unsets },
@@ -167,6 +168,7 @@ module SolidQueue
       def finalize(target_state, values)
         finalized = false
         transaction(operation: "finalize_claimed_job") do
+          finalized = false
           result = self.class.collection.update_one(
             ownership_filter,
             { "$set" => values.merge(state: target_state), "$unset" => claim_unsets },

@@ -127,7 +127,7 @@ class MongoNativeLifecycleTest < MongoTestCase
       end
     end
 
-    refute active_job.successfully_enqueued?
+    assert_not active_job.successfully_enqueued?
     assert_equal 0, SolidQueue::Job.count
     assert_equal 0, SolidQueue::Batch.count
     assert_equal 0, SolidQueue::Mongo.collection(:batch_executions).count_documents
@@ -148,6 +148,22 @@ class MongoNativeLifecycleTest < MongoTestCase
     assert_operator BSON::Document.new(document.fetch("error")).to_bson.to_s.bytesize,
       :<=, SolidQueue::FailedExecution::MAX_ERROR_BYTES
     assert_operator BSON::Document.new(document).to_bson.to_s.bytesize, :<=, SolidQueue::Job::BSON_MAX_DOCUMENT_BYTES
+  end
+
+  test "execution class queries only see jobs in their own state" do
+    ready = MongoNativeLifecycleJob.perform_later("ready")
+    MongoNativeLifecycleJob.set(wait: 1.hour).perform_later("scheduled")
+
+    assert_equal 1, SolidQueue::ReadyExecution.count
+    assert_equal 0, SolidQueue::FailedExecution.count
+    assert_equal 0, SolidQueue::ClaimedExecution.count
+    assert_nil SolidQueue::FailedExecution.find_by(active_job_id: ready.job_id)
+    assert_raises(SolidQueue::RecordNotFound) { SolidQueue::FailedExecution.find(ready.provider_job_id) }
+    assert_equal ready.provider_job_id, SolidQueue::ReadyExecution.find(ready.provider_job_id).id
+
+    assert_equal 0, SolidQueue::FailedExecution.delete_all
+    assert_equal 1, SolidQueue::ReadyExecution.delete_all
+    assert_equal 1, SolidQueue::Job.count
   end
 
   test "queue order, escaped prefixes, and pauses constrain claims" do

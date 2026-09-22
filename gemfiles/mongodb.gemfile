@@ -1,8 +1,13 @@
 source "https://rubygems.org"
 
-gem "mongo", ENV.fetch("MONGO_DRIVER_VERSION", ">= 2.24"), "< 3"
-gem "mongoid", ">= 9", "< 10", require: false
-gem "railties", ENV.fetch("RAILS_VERSION", "~> 8.1.0")
+setting = ->(name, default) { ENV[name].to_s.empty? ? default : ENV[name] }
+
+gem "mongo", setting.("MONGO_DRIVER_VERSION", "2.26.0")
+gem "railties", setting.("RAILS_VERSION", "8.1.3.1")
 gem "json", "< 3"
+gem "ostruct"
+
+mongoid_source = { git: setting.("MONGOID_GIT", nil), ref: setting.("MONGOID_REF", nil) }.compact
+gem "mongoid", setting.("MONGOID_VERSION", "9.1.1"), **mongoid_source, require: false
 
 gemspec path: "../"

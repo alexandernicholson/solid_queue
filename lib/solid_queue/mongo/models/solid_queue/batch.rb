@@ -155,15 +155,21 @@ module SolidQueue
 
         def finish_stalled_batches(batch_size:)
           finished_count = 0
-          collection.find(
-            { finished_at: nil, enqueued_at: { "$exists" => true, "$ne" => nil } },
-            **SolidQueue::Mongo.session_options
-          ).limit(batch_size).each do |document|
-            batch = from_document(document)
-            next unless batch.pending_jobs.zero?
+          last_id = nil
+          loop do
+            filter = { finished_at: nil, enqueued_at: { "$exists" => true, "$ne" => nil } }
+            filter[:_id] = { "$gt" => last_id } if last_id
+            documents = collection.find(filter, **SolidQueue::Mongo.session_options).sort(_id: 1).limit(batch_size).to_a
+            break if documents.empty?
 
-            batch.finish
-            finished_count += 1 if batch.reload.finished?
+            last_id = documents.last.fetch("_id")
+            documents.each do |document|
+              batch = from_document(document)
+              next if BatchExecution.outstanding_for_batch?(batch.bson_id)
+
+              batch.finish
+              finished_count += 1 if batch.reload.finished?
+            end
           end
           finished_count
         end
@@ -205,6 +211,7 @@ module SolidQueue
       raise PendingMigrations unless self.class.migrated?
 
       creating = !persisted?
+      committed = false
       original_attributes = @attributes.deep_dup if creating
       original_bson_id = @bson_id if creating
       if !creating && self.class.collection.find({ _id: bson_id, finished_at: { "$ne" => nil } }, **SolidQueue::Mongo.session_options).first
@@ -212,6 +219,7 @@ module SolidQueue
       end
 
       SolidQueue::Mongo.transaction(operation: "enqueue batch") do
+        SolidQueue::Mongo.after_commit { committed = true }
         if creating
           # save! mutates in-memory state before commit. Restore the original
           # snapshot before every retried attempt, then insert again.
@@ -232,7 +240,7 @@ module SolidQueue
       end
       self
     rescue
-      if creating
+      if creating && !committed
         @attributes = original_attributes
         @bson_id = original_bson_id
         @persisted = false
@@ -259,7 +267,7 @@ module SolidQueue
       SolidQueue::Mongo.transaction(operation: "finish batch") do
         # This marker read and the parent write share the transaction. Adders also
         # mutate the parent, so MongoDB's write-conflict retry prevents write skew.
-        next unless BatchExecution.count_for_batch(bson_id).zero?
+        next if BatchExecution.outstanding_for_batch?(bson_id)
 
         now = Time.current
         result = self.class.collection.update_one(
@@ -286,7 +294,7 @@ module SolidQueue
     end
 
     def status
-      return(failed? ? :failed : :completed) if finished?
+      return failed? ? :failed : :completed if finished?
       enqueued? ? :enqueued : :pending
     end
 
@@ -343,7 +351,7 @@ module SolidQueue
     private
       def finalize
         reload
-        return unless BatchExecution.count_for_batch(bson_id).zero?
+        return if BatchExecution.outstanding_for_batch?(bson_id)
 
         SolidQueue.instrument(:finish_batch, batch_id: id) do |payload|
           failures = SolidQueue::Mongo.collection(:jobs).distinct(

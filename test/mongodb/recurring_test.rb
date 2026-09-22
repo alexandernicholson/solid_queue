@@ -66,7 +66,7 @@ class MongoNativeRecurringTest < MongoTestCase
       MongoNativeRecurringJob.perform_later("second")
     end
 
-    refute_equal first.provider_job_id, second.provider_job_id
+    assert_not_equal first.provider_job_id, second.provider_job_id
     assert_equal 2, SolidQueue::RecurringExecution.count
     assert_equal({ "same-task" => second_run }, SolidQueue::RecurringExecution.last_enqueued_at_by_task([ "same-task" ]))
   end

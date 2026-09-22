@@ -12,7 +12,7 @@ class InstallGeneratorTest < Rails::Generators::TestCase
   test "MongoDB install configures a driver-only application and explains preparation" do
     prepare_application
 
-    output, = capture_io { run_generator %w[ --backend mongodb ] }
+    output = run_generator %w[ --backend mongodb ]
 
     assert_file "Gemfile" do |contents|
       assert_match(/gem "mongo", ">= 2\.24", "< 3"/, contents)
@@ -21,9 +21,12 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     assert_file "config/recurring.yml"
     assert_file "bin/jobs"
     assert_no_file "db/queue_schema.rb"
+    assert_file "config/application.rb" do |contents|
+      assert_match(/^    config\.solid_queue\.backend = :mongodb$/, contents)
+    end
     assert_file "config/environments/production.rb" do |contents|
-      assert_match(/config\.active_job\.queue_adapter = :solid_queue/, contents)
-      assert_match(/config\.solid_queue\.backend = :mongodb/, contents)
+      assert_match(/^  config\.active_job\.queue_adapter = :solid_queue$/, contents)
+      assert_no_match(/config\.solid_queue\.backend/, contents)
       assert_no_match(/connects_to/, contents)
     end
     assert_match(/MongoDB support is experimental/, output)
@@ -39,10 +42,23 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     assert_file "Gemfile" do |contents|
       assert_no_match(/gem "mongo"/, contents)
     end
-    assert_file "config/environments/production.rb" do |contents|
-      assert_match(/config\.active_job\.queue_adapter = :solid_queue/, contents)
-      assert_match(/config\.solid_queue\.connects_to = \{ database: \{ writing: :queue \} \}/, contents)
+    assert_file "config/application.rb" do |contents|
       assert_no_match(/config\.solid_queue\.backend/, contents)
+    end
+    assert_file "config/environments/production.rb" do |contents|
+      assert_match(/^  config\.active_job\.queue_adapter = :solid_queue$/, contents)
+      assert_match(/^  config\.solid_queue\.connects_to = \{ database: \{ writing: :queue \} \}$/, contents)
+      assert_no_match(/config\.solid_queue\.backend/, contents)
+    end
+  end
+
+  test "a repeated MongoDB install selects the backend once" do
+    prepare_application
+
+    2.times { run_generator %w[ --backend mongodb ] }
+
+    assert_file "config/application.rb" do |contents|
+      assert_equal 1, contents.scan("config.solid_queue.backend = :mongodb").size
     end
   end
 
@@ -51,6 +67,13 @@ class InstallGeneratorTest < Rails::Generators::TestCase
       production_config = File.join(destination_root, "config/environments/production.rb")
       FileUtils.mkdir_p File.dirname(production_config)
       File.write File.join(destination_root, "Gemfile"), "source \"https://rubygems.org\"\n"
+      File.write File.join(destination_root, "config/application.rb"), <<~RUBY
+        module Dummy
+          class Application < Rails::Application
+            config.load_defaults 8.0
+          end
+        end
+      RUBY
       File.write production_config, <<~RUBY
         Rails.application.configure do
           # config.active_job.queue_adapter = :async

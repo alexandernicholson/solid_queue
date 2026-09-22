@@ -69,6 +69,13 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_match_logged :debug, "Deregister Worker", "process_id: #{process.id}, pid: 42, hostname: \"localhost\", name: \"worker-123\", last_heartbeat_at: \"#{last_heartbeat_at}\", claimed_size: 0, pruned: false"
   end
 
+  test "MongoDB command" do
+    attach_log_subscriber
+    instrument "mongo_command.solid_queue", status: :succeeded, command_name: "find", database_name: "queue", duration: 0.002, address: "127.0.0.1:27017", error: nil
+
+    assert_match_logged :debug, "MongoDB command", "status: :succeeded, command_name: \"find\", database_name: \"queue\", duration: 0.002, address: \"127.0.0.1:27017\""
+  end
+
   private
     def attach_log_subscriber
       ActiveSupport::LogSubscriber.attach_to :solid_queue, SolidQueue::LogSubscriber.new

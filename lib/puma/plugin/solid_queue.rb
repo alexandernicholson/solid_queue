@@ -31,7 +31,7 @@ Puma::Plugin.create do
       if Gem::Version.new(Puma::Const::VERSION) < Gem::Version.new("7")
         launcher.events.on_booted do
           @solid_queue_pid = fork do
-            after_fork!
+            SolidQueue.after_fork!
             Thread.new { monitor_puma }
             SolidQueue::Supervisor.start(mode: :fork)
 
@@ -47,7 +47,7 @@ Puma::Plugin.create do
       else
         launcher.events.after_booted do
           @solid_queue_pid = fork do
-            after_fork!
+            SolidQueue.after_fork!
             Thread.new { monitor_puma }
             start_solid_queue(mode: :fork)
 
@@ -86,14 +86,6 @@ Puma::Plugin.create do
           solid_queue_supervisor&.stop
           start_solid_queue(mode: :async, standalone: false)
         end
-      end
-    end
-
-    def after_fork!
-      if SolidQueue.mongodb?
-        SolidQueue::Mongo.after_fork!
-      elsif defined?(SolidQueue::MongoidIntegration)
-        SolidQueue::MongoidIntegration.after_fork!
       end
     end
 

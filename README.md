@@ -222,12 +222,14 @@ The generator adds the supported `mongo` dependency to the application's Gemfile
 
 When switching an existing installation between storage backends, drain its pending, scheduled, blocked, and failed work and switch producers and processes together. See [Upgrading](UPGRADING.md) for the cutover steps.
 
-Configure a replica-set URI and select the backend. The generator adds the backend setting to the target environment; keeping it in application configuration makes the complete setup explicit:
+Configure a replica-set URI and select the backend. The generator adds the backend setting to `config/application.rb`, so every environment and the `solid_queue:*` tasks use MongoDB. Set `backend` in `config/application.rb` or an environment file, not in `config/initializers`: it's read before initializers run. Other settings can go anywhere:
 
 ```ruby
+# config/application.rb
+config.solid_queue.backend = :mongodb
+
 # config/environments/production.rb
 config.active_job.queue_adapter = :solid_queue
-config.solid_queue.backend = :mongodb
 config.solid_queue.mongo_url = ENV.fetch("MONGODB_URI")
 ```
 
@@ -266,7 +268,7 @@ That client must point at the transaction-capable deployment used by the queue. 
 
 #### MongoDB transactions and delivery guarantees
 
-Queue coordination uses primary reads, majority-acknowledged writes, and short transactions. `config.solid_queue.mongo_transaction_timeout` sets the retry deadline and defaults to 5 seconds. The driver's transaction block can run again after a transient error, so keep external side effects out of it.
+Queue coordination uses primary reads, majority-acknowledged writes, and short transactions. `config.solid_queue.mongo_transaction_timeout` bounds how long transient-error retries of a transaction, and retries of its commit, may continue; it defaults to 5 seconds and doesn't limit how long a single attempt runs. A limited or batched enqueue that exceeds it raises `SolidQueue::Job::EnqueueError`. The driver's transaction block can run again after a transient error, so keep external side effects out of it.
 
 Application writes and queue writes are atomic only when both use the **same `Mongo::Client` and the same explicit `Mongo::Session`**. Scope a caller-owned session around enqueueing with:
 
@@ -316,7 +318,7 @@ It emits `mongo_command.solid_queue`. All of these events are handled by Solid Q
 
 #### MongoDB verification and benchmarks
 
-The repository includes native MongoDB tests (`test/mongodb`), optional Mongoid tests (`test/mongoid`), a Docker compatibility runner (`test/mongodb/run_matrix.rb`), and a persistence benchmark (`benchmarks/run`). The fault tests require a dedicated replica set with test commands enabled. The benchmark records its environment and comparison under `tmp/benchmarks`; measure your production topology separately.
+The repository includes native MongoDB tests (`test/mongodb`), optional Mongoid tests (`test/mongoid`), a Docker runner (`test/mongodb/run_matrix.rb`), and a persistence benchmark (`benchmarks/run`). CI and the runner test two lanes: pinned (Ruby 4.0.2, Rails 8.0.5.1, `mongo` 2.26.0, Mongoid 7.6.1, MongoDB 8.0) and latest (Ruby 4.0.7, Rails 8.1.3.1, `mongo` 2.26.0, Mongoid 9.1.1, MongoDB 8.3). The released Mongoid 7.6.1 gem requires Active Model below 7.1, so the pinned lane installs Mongoid from `MONGOID_GIT` at `MONGOID_REF` (repository variables in CI, environment variables for the runner); point them at a 7.6.1 source that supports Rails 8.0. The fault tests require a dedicated replica set with test commands enabled. The benchmark records its environment and comparison under `tmp/benchmarks`; measure your production topology separately.
 
 ### Incremental adoption
 

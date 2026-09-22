@@ -46,7 +46,7 @@ class MongoidArgumentsTest < MongoTestCase
 
     assert_equal "MongoidConcurrencyJob/MongoidArgumentDocument/#{document.id}", original_key
     assert_equal original_key, reloaded_key
-    refute defined?(ActiveRecord::Base)
+    assert_not defined?(ActiveRecord::Base)
   end
 
   test "a nested BSON ObjectId survives an Active Job JSON payload round trip" do
@@ -140,6 +140,50 @@ class MongoidArgumentsTest < MongoTestCase
     SolidQueue::Mongo.prepare!
   end
 
+  test "lazy fork detection replaces only the queue client and keeps Mongoid state" do
+    skip "fork is unavailable" unless ::Process.respond_to?(:fork)
+
+    SolidQueue::Mongo.reset!
+    SolidQueue::Mongo.prepare!
+    parent_queue_client = SolidQueue::Mongo.client
+    reader, writer = IO.pipe
+    reader.binmode
+    writer.binmode
+
+    pid = fork do
+      reader.close
+      begin
+        application_client = Mongoid::Clients.default
+        marker = Object.new
+        set_application_session(marker, application_client)
+        MongoRaceJob.perform_later
+        writer.write(Marshal.dump(
+          ok: true,
+          queue_replaced: !SolidQueue::Mongo.client.equal?(parent_queue_client),
+          application_client_kept: Mongoid::Clients.default.equal?(application_client),
+          session_kept: application_session(application_client).equal?(marker)
+        ))
+      rescue Exception => error
+        writer.write(Marshal.dump(ok: false, error: "#{error.class}: #{error.message}"))
+      ensure
+        writer.close
+        exit! 0
+      end
+    end
+
+    writer.close
+    result = Marshal.load(reader.read)
+    reader.close
+    Process.waitpid(pid)
+    assert result.fetch(:ok), result[:error]
+    assert result.fetch(:queue_replaced)
+    assert result.fetch(:application_client_kept)
+    assert result.fetch(:session_kept)
+  ensure
+    SolidQueue::Mongo.reset!
+    SolidQueue::Mongo.prepare!
+  end
+
   test "fork preserves identity when a direct queue client is a Mongoid registry entry" do
     skip "fork is unavailable" unless ::Process.respond_to?(:fork)
 
@@ -184,4 +228,17 @@ class MongoidArgumentsTest < MongoTestCase
     SolidQueue.mongo_client = previous_mongo_client if defined?(previous_mongo_client)
     SolidQueue::Mongo.prepare!
   end
+
+  private
+    def set_application_session(session, client)
+      Mongoid::Threaded.set_session(session, **session_scope(:set_session, client))
+    end
+
+    def application_session(client)
+      Mongoid::Threaded.get_session(**session_scope(:get_session, client))
+    end
+
+    def session_scope(method_name, client)
+      Mongoid::Threaded.method(method_name).parameters.include?([ :key, :client ]) ? { client: client } : {}
+    end
 end

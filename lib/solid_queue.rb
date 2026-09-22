@@ -17,8 +17,8 @@ loader = Zeitwerk::Loader.for_gem(warn_on_extra_files: false)
 loader.ignore("#{__dir__}/solid_queue/tasks.rb")
 loader.ignore("#{__dir__}/generators")
 loader.ignore("#{__dir__}/puma")
-loader.ignore("#{__dir__}/solid_queue/mongo/models")
-loader.ignore("#{__dir__}/solid_queue/mongo/transactions.rb")
+loader.ignore("#{__dir__}/solid_queue/mongo.rb")
+loader.ignore("#{__dir__}/solid_queue/mongo")
 loader.setup
 
 module SolidQueue
@@ -43,6 +43,10 @@ module SolidQueue
     unless %i[ active_record mongodb ].include?(backend.to_sym)
       raise ArgumentError, "Unknown Solid Queue backend: #{backend.inspect}. Use :active_record or :mongodb."
     end
+  end
+
+  def after_fork!
+    Mongo.after_fork! if mongodb?
   end
 
   def with_mongo_session(session, client: nil, &block)
