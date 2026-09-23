@@ -340,6 +340,7 @@ flowchart LR
     { rank: "16", title: "default_priority, default_queue_name", track: "shim", owner: "shim-enqueue", status: "building" },
     { rank: "17", title: "script/delayed_job start · stop · restart · status · run", track: "shim", owner: "shim-ops", status: "building" },
     { rank: "18", title: "display_name in logs and Admin", track: "both", owner: "core-exec · shim-enqueue", status: "review", note: "Core on main: failure, release, timeout events and Admin" },
+    { rank: "★", title: "Exactly-once processing: DJ parity proven + processes_exactly_once", track: "core", owner: "core-once", status: "building", note: "Perform and completion commit in one queue-database transaction" },
     { rank: "A", title: "Delayed::Job facade on both backends", track: "shim", owner: "shim-ops", status: "building" },
     { rank: "B", title: "Delayed::Worker settings and constants", track: "shim", owner: "shim-enqueue", status: "building" },
     { rank: "C", title: ":delayed_job Active Job adapter", track: "shim", owner: "shim-ops", status: "building" },
@@ -355,6 +356,7 @@ flowchart LR
     { name: "core-exec", track: "core", items: [ "Run-time watchdog (3)", "Death recovery retry (6)", "Execution hooks (11)", "display_name (18)" ] },
     { name: "core-worker", track: "core", items: [ "Priority-range claims (9)", "Drain mode (8)", "SolidQueue.work_off (4)", "check_latency, clear (13, 14)" ] },
     { name: "shim-enqueue", track: "shim", items: [ "Delay proxy, PerformableMethod (1, 10)", "JobWrapper retries, hooks (2, 7)", "Delayed::Worker (5, 15, 16, B)", "Lifecycle, plugins, Mongoid (11, 12)" ] },
+    { name: "core-once", track: "core", items: [ "Delivery guarantees suite (DJ parity)", "processes_exactly_once mode", "Release uncommitted claims on death", "Delivery guarantees docs" ] },
     { name: "shim-ops", track: "shim", items: [ "Delayed::Job facade (A)", "Command, tasks (8, 9, 13, 14, 17)", "Adapter, import (C, D)", "CI, README (E)" ] }
   ];
 
