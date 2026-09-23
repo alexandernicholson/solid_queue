@@ -6,15 +6,16 @@ module PersistenceContract
       class: %i[ enqueue enqueue_all find find_by clear_finished_in_batches ],
       instance: %i[ id active_job_id class_name queue_name priority arguments status finished? ready? claimed? failed?
         scheduled? blocked? finished! failed_with retry discard dispatch prepare_for_execution due?
-        concurrency_limited? deduplicated? unblock_next_blocked_job batch ]
+        concurrency_limited? deduplicated? unblock_next_blocked_job batch run_time_limit display_name ]
     },
     "SolidQueue::ReadyExecution" => {
       class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs ],
       instance: %i[ job job_id discard ]
     },
     "SolidQueue::ClaimedExecution" => {
-      class: %i[ claiming release_for_process fail_for_process fail_orphaned release_all fail_all_with ],
-      instance: %i[ job job_id process_id perform release failed_with discard ]
+      class: %i[ claiming release_for_process fail_for_process fail_orphaned release_all fail_all_with fail_timed_out
+        display_names_for ],
+      instance: %i[ job job_id process_id started_at timeout_at perform release failed_with discard ]
     },
     "SolidQueue::FailedExecution" => {
       class: %i[ retry_all discard_all_in_batches discard_all_from_jobs ],

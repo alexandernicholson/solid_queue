@@ -41,6 +41,7 @@ module SolidQueue
     field :claim_generation, default: 0
     field :claimed_at
     field :started_at
+    field :timeout_at
     field :expires_at
     field :error
 
@@ -366,6 +367,14 @@ module SolidQueue
       job_class&.concurrency_limit
     end
 
+    def run_time_limit
+      [ job_class.try(:run_time_limit), SolidQueue.max_run_time ].compact.min
+    end
+
+    def display_name
+      @display_name ||= custom_display_name || class_name
+    end
+
     def concurrency_duration
       job_class&.concurrency_duration
     end
@@ -547,7 +556,17 @@ module SolidQueue
       end
 
       def claim_unsets
-        { process_id: true, claim_token: true, claimed_at: true, started_at: true }
+        { process_id: true, claim_token: true, claimed_at: true, started_at: true, timeout_at: true }
+      end
+
+      def custom_display_name
+        return unless job_class.is_a?(Class) && job_class.method_defined?(:display_name)
+
+        active_job = ActiveJob::Base.deserialize(arguments)
+        active_job.arguments = ActiveJob::Arguments.deserialize(arguments.fetch("arguments", []))
+        active_job.display_name.presence&.to_s
+      rescue StandardError
+        nil
       end
 
       def terminal_unsets

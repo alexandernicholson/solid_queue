@@ -76,6 +76,35 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_match_logged :debug, "MongoDB command", "status: :succeeded, command_name: \"find\", database_name: \"queue\", duration: 0.002, address: \"127.0.0.1:27017\""
   end
 
+  test "run time exceeded" do
+    started_at = Time.now
+    attach_log_subscriber
+    instrument "run_time_exceeded.solid_queue", job_id: 42, process_id: 7, max_run_time: 10.minutes, started_at: started_at, display_name: "User#welcome"
+
+    assert_match_logged :warn, "Fail job that exceeded its run time", "job_id: 42, process_id: 7, display_name: \"User#welcome\", max_run_time: 10 minutes, started_at: \"#{started_at.iso8601}\""
+  end
+
+  test "death recovery" do
+    attach_log_subscriber
+    instrument "death_recovery.solid_queue", job_ids: [ 1, 2, 3 ], retried: [ 1, 2 ], exhausted: [ 3 ], error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :info, "Retry jobs failed by process death", "job_ids: [1, 2, 3], retried: [1, 2], exhausted: [3], error: \"SolidQueue::Processes::ProcessMissingError The process that was running this job no longer exists\""
+  end
+
+  test "fail claimed jobs includes display names" do
+    attach_log_subscriber
+    instrument "fail_many_claimed.solid_queue", job_ids: [ 42 ], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, error: RuntimeError.new("gone")
+
+    assert_match_logged :warn, "Fail claimed jobs", "job_ids: [42], process_ids: [7], display_names: #{({ 42 => "User#welcome" }).inspect}, error: \"RuntimeError gone\""
+  end
+
+  test "release claimed job includes the display name" do
+    attach_log_subscriber
+    instrument "release_claimed.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome"
+
+    assert_match_logged :info, "Release claimed job", "job_id: 42, process_id: 7, display_name: \"User#welcome\""
+  end
+
   private
     def attach_log_subscriber
       ActiveSupport::LogSubscriber.attach_to :solid_queue, SolidQueue::LogSubscriber.new

@@ -233,10 +233,11 @@ module SolidQueue
           error: job.error,
           blocked_until: job.blocked? ? job.expires_at : nil,
           worker_id: job.claimed? ? job.process_id : nil,
-          started_at: job.claimed? ? job.claimed_at : nil
+          started_at: job.claimed? ? job.claimed_at : nil,
+          display_name: job.display_name
         }
       else
-        attributes = { raw_data: job.as_json }
+        attributes = { raw_data: job.as_json, display_name: job.display_name }
         case (STATUS_MAP[status&.to_sym] || job.status)&.to_sym
         when :failed
           attributes[:failed_at] = job.failed_execution.created_at

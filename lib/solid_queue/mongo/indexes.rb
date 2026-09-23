@@ -14,6 +14,7 @@ module SolidQueue
           { key: { expires_at: 1, concurrency_key: 1 }, name: "blocked_maintenance_v2", partial_filter_expression: { state: "blocked" } },
           { key: { process_id: 1, _id: 1 }, name: "claimed_by_process_v2", partial_filter_expression: { state: "claimed" } },
           { key: { claim_token: 1, process_id: 1 }, name: "claimed_by_token_v2", partial_filter_expression: { state: "claimed" } },
+          { key: { timeout_at: 1 }, name: "claimed_timeout", partial_filter_expression: { state: "claimed" } },
           { key: { created_at: 1, _id: 1 }, name: "failed_jobs_v2", partial_filter_expression: { state: "failed" } },
           { key: { finished_at: 1, _id: 1 }, name: "finished_retention_v2", partial_filter_expression: { state: "finished" } },
           { key: { active_job_id: 1, _id: 1 }, name: "active_job_attempts" },

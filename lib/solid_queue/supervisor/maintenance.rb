@@ -26,6 +26,7 @@ module SolidQueue
       def run_maintenance
         prune_dead_processes
         fail_orphaned_executions
+        fail_timed_out_executions
       end
 
       def prune_dead_processes
@@ -36,6 +37,10 @@ module SolidQueue
         wrap_in_app_executor do
           ClaimedExecution.fail_orphaned(Processes::ProcessMissingError.new)
         end
+      end
+
+      def fail_timed_out_executions
+        wrap_in_app_executor { ClaimedExecution.fail_timed_out }
       end
 
       # When a supervised process crashes or exits we need to mark all the

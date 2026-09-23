@@ -16,7 +16,7 @@ module SolidQueue
       end
     end
 
-    include Executable, Clearable, Recurrable, Batchable, Deduplicatable
+    include Executable, Clearable, Recurrable, Batchable, Deduplicatable, RunTimeLimited, Nameable
 
     serialize :arguments, coder: JSON
 

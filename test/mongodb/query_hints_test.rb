@@ -70,6 +70,10 @@ class MongoQueryHintsTest < MongoTestCase
     assert_equal [ "semaphore_expiration" ], hints_on(:semaphores) { SolidQueue::Semaphore.expire(batch_size: 10) }
   end
 
+  test "sweeping timed-out claims hints the claimed timeout index" do
+    assert_equal [ "claimed_timeout" ], hints_on(:jobs) { SolidQueue::ClaimedExecution.fail_timed_out }
+  end
+
   private
     def hints_on(collection_name)
       recorder = CommandRecorder.new

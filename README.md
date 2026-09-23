@@ -27,13 +27,16 @@ Solid Queue's default backend supports SQL databases such as MySQL, PostgreSQL, 
   - [Other configuration settings](#other-configuration-settings)
   - [Validating the configuration](#validating-the-configuration)
 - [Lifecycle hooks](#lifecycle-hooks)
+  - [Execution hooks](#execution-hooks)
 - [Errors when enqueuing](#errors-when-enqueuing)
 - [Concurrency controls](#concurrency-controls)
   - [Performance considerations](#performance-considerations)
 - [Deduplication](#deduplication)
 - [Failed jobs and retries](#failed-jobs-and-retries)
   - [Error reporting on jobs](#error-reporting-on-jobs)
+  - [Limiting run time](#limiting-run-time)
   - [Jobs interrupted by non-graceful process death](#jobs-interrupted-by-non-graceful-process-death)
+  - [Display names](#display-names)
 - [Batch jobs](#batch-jobs)
   - [Batch progress and counters](#batch-progress-and-counters)
   - [Batch maintenance](#batch-maintenance)
@@ -726,6 +729,27 @@ end
 
 These can be called several times to add multiple hooks, but it needs to happen before Solid Queue is started. An initializer would be a good place to do this.
 
+### Execution hooks
+
+Execution hooks wrap the work a worker does, on both backends:
+
+```ruby
+SolidQueue.around_perform do |execution, &block|
+  Rails.logger.tagged("job-#{execution.job_id}") { block.call }
+end
+
+SolidQueue.on_failure do |execution, error|
+  MyMetricsReporter.increment("jobs.failed", job: execution.job.display_name, error: error.class.name)
+end
+```
+
+- `around_perform` wraps each claimed job's run, including recording its outcome. `on_failure` runs with the execution and the error once a failed run has been recorded. `around_poll` wraps each worker poll and `around_claim` each claim of ready jobs; both yield the worker.
+- Executions expose `job_id`, `job` and `process_id` on either backend.
+- Hooks run in registration order, the first one outermost. Always call the block: a hook that raises before calling it, or returns without calling it, fails the claim with its error or `SolidQueue::ExecutionHooks::NotPerformedError` instead of leaving it claimed. Calling the block twice runs the job once.
+- An error raised by an `on_failure` hook goes to `on_thread_error` and doesn't replace the job's error.
+
+Register execution hooks in an initializer. `SolidQueue::ExecutionHooks.clear` removes them all, which is useful in tests.
+
 
 ## Errors when enqueuing
 
@@ -920,9 +944,34 @@ class ApplicationMailer < ActionMailer::Base
   end
 ```
 
+### Limiting run time
+
+Give a job a maximum run time, or set one for every job with `config.solid_queue.max_run_time`. A job gets the shorter of the two; there's no limit by default.
+
+```ruby
+class ImportJob < ApplicationJob
+  limits_run_time max: 30.minutes
+end
+```
+
+- The worker runs `perform` inside `Timeout.timeout`, which raises `SolidQueue::Processes::RunTimeExceededError`, a `Timeout::Error`, in the job's thread or fiber. It's handled like any other error: `retry_on SolidQueue::Processes::RunTimeExceededError` retries it, otherwise the job fails.
+- Before a limited job runs, its claim records `started_at` and `timeout_at`: the start plus the limit plus `config.solid_queue.run_time_grace` (30 seconds by default). Supervisor maintenance, which runs every `process_alive_threshold`, fails claims whose `timeout_at` has passed, so a job that rescues the timeout or blocks where Ruby can't interrupt it still fails. Each of these emits `run_time_exceeded.solid_queue` with `job_id`, `process_id`, `max_run_time`, `started_at` and `display_name`.
+- Like a deduplicated claim, a limited claim that has started isn't released on graceful shutdown. If its worker exits first, the claim is failed with `ProcessMissingError`.
+- `Timeout` interrupts code at any point, so make limited jobs safe to interrupt and keep limits well above their normal run time.
+
+Existing Active Record installations need the `add_run_time_limits_to_solid_queue` migration for the maintenance sweep; without it only the in-process timeout applies. MongoDB installations run `bin/rails solid_queue:prepare` to add the index. See [Upgrading](UPGRADING.md).
+
 ### Jobs interrupted by non-graceful process death
 
-When a process dies without a clean shutdown (for example, `SIGKILL`ed by the OS or the container runtime because of memory limits), the jobs it was running can't be released back to their queues. Once another process notices the missing heartbeats and prunes the dead process's registration, its in-flight jobs are marked as failed with `SolidQueue::Processes::ProcessPrunedError`. Solid Queue deliberately doesn't retry these automatically: the job itself might be what's killing the process (for example, a job that exhausts the container's memory), and retrying it blindly would just kill the next worker too.
+When a process dies without a clean shutdown (for example, `SIGKILL`ed by the OS or the container runtime because of memory limits), the jobs it was running can't be released back to their queues. Once another process notices the missing heartbeats and prunes the dead process's registration, its in-flight jobs are marked as failed with `SolidQueue::Processes::ProcessPrunedError`. By default, Solid Queue doesn't retry these: the job itself might be what's killing the process (for example, a job that exhausts the container's memory), and retrying it blindly would just kill the next worker too.
+
+To retry them with a cap, set:
+
+```ruby
+config.solid_queue.retry_on_process_death = { attempts: 3 }
+```
+
+After claims are failed with `ProcessPrunedError`, `ProcessExitError` or `ProcessMissingError`, each job is retried like a manual retry, so concurrency limits, batches and deduplication still apply. The interrupted run counts as an Active Job execution, and once a job's `executions` reach `attempts` it stays failed. Jobs failed for any other reason are never retried this way. Each recovery emits `death_recovery.solid_queue` with `job_ids`, `retried`, `exhausted` and `error`. Keep `attempts` low: a job that kills its process can take down that many workers.
 
 Active Job's `retry_on` and `rescue_from` handle exceptions raised inside `perform`, not process-pruning failures recorded later. Review these failures through `SolidQueue::Admin.failures` and retry only jobs whose effects are safe to repeat. The subscription below shows one possible policy on either backend.
 
@@ -942,6 +991,10 @@ end
 ```
 
 The event is emitted in the process that performs the pruning (or the supervisor when it reaps a crashed fork, with `SolidQueue::Processes::ProcessExitError`), so make sure the subscription is set up in an initializer, where all Solid Queue processes will load it.
+
+### Display names
+
+If an Active Job class defines `display_name`, Solid Queue uses it for its jobs in logs, notifications and `SolidQueue::Admin.job_attributes`; otherwise it uses the class name. `SolidQueue::Job#display_name` deserializes the job's arguments to call it, so only classes that define it pay for that. The `fail_many_claimed` payload carries `display_names` by job ID, and `release_claimed` and `run_time_exceeded` carry `display_name`.
 
 ## Batch jobs
 
