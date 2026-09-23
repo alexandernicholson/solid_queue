@@ -17,19 +17,7 @@ module SolidQueue
 
         now = Time.current
         collection.delete_one({ key: key, expires_at: { "$lte" => now } }, **SolidQueue::Mongo.session_options)
-        result = collection.update_one(
-          { key: key },
-          { "$setOnInsert" => {
-            key: key,
-            active_job_id: job.active_job_id,
-            job_id: job.bson_id,
-            expires_at: active_job.deduplication_duration&.from_now,
-            created_at: now
-          } },
-          upsert: true,
-          **SolidQueue::Mongo.session_options
-        )
-        return true if result.upserted_id
+        return true if create_unique_by(key: key, active_job_id: job.active_job_id, job_id: job.bson_id, expires_at: active_job.deduplication_duration&.from_now, created_at: now)
 
         holder = collection.find({ key: key }, **SolidQueue::Mongo.session_options).projection(active_job_id: 1, job_id: 1).first
         return true if holder && holder["active_job_id"] == job.active_job_id
@@ -57,6 +45,17 @@ module SolidQueue
         filter[:expires_at] = nil unless windowed
         collection.delete_many(filter, **SolidQueue::Mongo.session_options)
       end
+
+      private
+        def create_unique_by(attributes)
+          result = collection.update_one(
+            { key: attributes.fetch(:key) },
+            { "$setOnInsert" => attributes },
+            upsert: true,
+            **SolidQueue::Mongo.session_options
+          )
+          result.upserted_id.present?
+        end
     end
   end
 end

@@ -56,14 +56,14 @@ module SolidQueue
         else
           transaction(operation: "enqueue_job") do
             created = new(attributes)
-            next created.tap(&:duplicate!) unless Deduplication.reserve(created, active_job)
+            next created.tap(&:duplicate!) unless reserve_deduplication(created, active_job)
 
-            BatchExecution.create_all_from_jobs([ created ]) if batch_tracking?
+            batch_all([ created ])
             if !created.due?
               created.state = "scheduled"
             elsif !created.concurrency_limited? || Semaphore.wait(created)
               created.state = "ready"
-            elsif created.concurrency_on_conflict.to_s == "discard"
+            elsif created.concurrency_on_conflict.discard?
               BatchExecution.complete(created) if created.batched?
               Deduplication.release([ created ], windowed: true) if created.deduplicated?
               next created
@@ -81,7 +81,7 @@ module SolidQueue
 
         active_job.provider_job_id = job.id if job.persisted?
         active_job.successfully_enqueued = job.persisted?
-        raise DuplicateError, "#{active_job.class.name} is already enqueued as #{active_job.deduplication_key}" if job.duplicate?
+        raise duplicate_error_for(active_job) if job.duplicate?
         job
       rescue EnqueueError, SolidQueue::PersistenceError, SolidQueue::Mongo::TransactionDeadlineExceeded, *SolidQueue::Mongo::DRIVER_ERRORS => error
         active_job.successfully_enqueued = false
@@ -100,7 +100,7 @@ module SolidQueue
             active_job.scheduled_at ||= now
             active_job.batch_id = current_batch_id || active_job.batch_id
             document = attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: now)
-            unless Deduplication.reserve(from_document(document), active_job)
+            unless reserve_deduplication(from_document(document), active_job)
               duplicates << active_job
               next
             end
@@ -117,7 +117,7 @@ module SolidQueue
           unless documents.empty?
             collection.insert_many(documents, **SolidQueue::Mongo.session_options)
             jobs = documents.map { |document| from_document(document) }
-            BatchExecution.create_all_from_jobs(jobs) if batch_tracking?
+            batch_all(jobs)
             pending = jobs.select { |job| job.state.nil? }
             pending.each(&:dispatch)
             refresh_existing(pending)
@@ -131,7 +131,7 @@ module SolidQueue
             active_job.successfully_enqueued = true
           else
             active_job.successfully_enqueued = false
-            active_job.enqueue_error = DuplicateError.new("#{active_job.class.name} is already enqueued as #{active_job.deduplication_key}") if duplicates.include?(active_job)
+            active_job.enqueue_error = duplicate_error_for(active_job) if duplicates.include?(active_job)
           end
         end
         active_jobs.count(&:successfully_enqueued?)
@@ -141,22 +141,36 @@ module SolidQueue
       end
 
       def prepare_all_for_execution(jobs)
-        due, future = jobs.partition(&:due?)
-        dispatch_all(due)
-        future.each(&:schedule)
-        refresh_existing(jobs).select { |job| %w[ready blocked scheduled].include?(job.state) }
+        due, not_yet_due = jobs.partition(&:due?)
+        dispatch_all(due) + schedule_all(not_yet_due)
       end
 
       def dispatch_all(jobs)
-        without_limit, with_limit = jobs.partition { |job| !job.concurrency_limited? }
-        ReadyExecution.create_all_from_jobs(without_limit)
-        with_limit.each(&:dispatch)
-        refresh_existing(jobs).select { |job| %w[ready blocked].include?(job.state) }
+        with_concurrency_limits, without_concurrency_limits = jobs.partition(&:concurrency_limited?)
+
+        dispatch_all_at_once(without_concurrency_limits)
+        dispatch_all_one_by_one(with_concurrency_limits)
+
+        successfully_dispatched(jobs)
       end
 
       def schedule_all(jobs)
-        Array(jobs).each(&:schedule)
-        refresh_existing(jobs).select(&:scheduled?)
+        schedule_all_at_once(jobs)
+        successfully_scheduled(jobs)
+      end
+
+      def batch_all(jobs)
+        BatchExecution.create_all_from_jobs(jobs) if Batch.migrated?
+      end
+
+      def reserve_deduplication(job, active_job)
+        return true unless active_job.try(:deduplication_key)
+
+        Deduplication.reserve(job, active_job)
+      end
+
+      def duplicate_error_for(active_job)
+        DuplicateError.new("#{active_job.class.name} is already enqueued as #{active_job.deduplication_key}")
       end
 
       def release_all_concurrency_locks(jobs)
@@ -180,19 +194,10 @@ module SolidQueue
         SolidQueue::Mongo.id!(id)
       end
 
-      def distinct_queue_names(state: nil)
-        filter = state ? { state: state.to_s } : {}
-        collection.find(filter, **SolidQueue::Mongo.session_options).distinct(:queue_name)
-      end
-
       def ready_metrics(queue_name)
         filter = { state: "ready", queue_name: queue_name.to_s }
         first = collection.find(filter, **SolidQueue::Mongo.session_options).sort(created_at: 1).limit(1).first
         { size: collection.count_documents(filter, **SolidQueue::Mongo.session_options), oldest_created_at: first && first["created_at"] }
-      end
-
-      def discard_ready_in_queue(queue_name, batch_size: 500)
-        Execution.discard_matching({ state: "ready", queue_name: queue_name.to_s }, batch_size: batch_size)
       end
 
 
@@ -233,8 +238,24 @@ module SolidQueue
       end
 
       private
-        def batch_tracking?
-          Batch.migrated?
+        def dispatch_all_at_once(jobs)
+          ReadyExecution.create_all_from_jobs(jobs)
+        end
+
+        def dispatch_all_one_by_one(jobs)
+          jobs.each(&:dispatch)
+        end
+
+        def successfully_dispatched(jobs)
+          refresh_existing(jobs).select { |job| job.ready? || job.blocked? }
+        end
+
+        def schedule_all_at_once(jobs)
+          ScheduledExecution.create_all_from_jobs(jobs)
+        end
+
+        def successfully_scheduled(jobs)
+          refresh_existing(jobs).select(&:scheduled?)
         end
 
         def attributes_from_active_job(active_job)
@@ -371,7 +392,7 @@ module SolidQueue
     end
 
     def concurrency_on_conflict
-      job_class&.concurrency_on_conflict
+      (job_class&.concurrency_on_conflict).to_s.inquiry
     end
 
     def prepare_for_execution
@@ -383,15 +404,11 @@ module SolidQueue
         reload
         next false unless [ nil, "scheduled", "failed" ].include?(state)
 
-        if !concurrency_limited? || Semaphore.wait(self)
-          raise DispatchConflict unless dispatch_bypassing_concurrency_limits
+        if acquire_concurrency_lock
+          raise DispatchConflict unless ready
           "ready"
-        elsif concurrency_on_conflict.to_s == "discard"
-          destroy_pending!
-          false
         else
-          BlockedExecution.block(self)
-          reload.state
+          handle_concurrency_conflict
         end
       end
     rescue DispatchConflict
@@ -399,18 +416,7 @@ module SolidQueue
     end
 
     def dispatch_bypassing_concurrency_limits
-      result = self.class.collection.update_one(
-        { _id: bson_id, state: { "$in" => [ nil, "scheduled", "failed" ] } },
-        { "$set" => { state: "ready" }, "$unset" => terminal_unsets },
-        **SolidQueue::Mongo.session_options
-      )
-      reload
-      result.modified_count == 1 || state == "ready"
-    end
-
-    def schedule
-      ScheduledExecution.schedule(self)
-      reload.state
+      ready
     end
 
     def transition_to!(new_state, from:, set: {}, unset: {})
@@ -438,8 +444,8 @@ module SolidQueue
 
         previous_state = previous["state"] || previous[:state]
         reload
-        BatchExecution.complete(self) if batch_tracking?
-        Deduplication.release([ self ]) if deduplicated?
+        BatchExecution.complete(self) if batched?
+        release_deduplication
         unless SolidQueue.preserve_finished_jobs?
           self.class.delete_recurring_markers([ bson_id ])
           self.class.collection.delete_one({ _id: bson_id, state: "finished" }, **SolidQueue::Mongo.session_options)
@@ -450,7 +456,7 @@ module SolidQueue
       self
     end
 
-    def fail_with(exception)
+    def failed_with(exception)
       transaction(operation: "fail_job") do
         result = self.class.collection.update_one(
           { _id: bson_id, state: { "$ne" => "claimed" } },
@@ -459,11 +465,10 @@ module SolidQueue
         )
         raise SolidQueue::RecordNotFound, "Job #{id} cannot be failed" unless result.modified_count == 1
         reload
-        BatchExecution.complete(self) if batch_tracking?
+        BatchExecution.complete(self) if batched?
       end
       FailedExecution.from_document(attributes)
     end
-    alias_method :failed_with, :fail_with
 
     def reset_execution_counters
       payload = arguments.deep_dup
@@ -526,20 +531,64 @@ module SolidQueue
     end
 
     def unblock_next_blocked_job
-      return false unless concurrency_limited?
-      released = Semaphore.signal(self)
-      BlockedExecution.release_for(concurrency_key) if released
-      released
+      release_concurrency_lock.tap do |released|
+        release_next_blocked_job if released
+      end
+    end
+
+    def release_deduplication
+      Deduplication.release([ self ]) if deduplicated?
     end
 
     private
-      def batch_tracking?
-        self.class.send(:batch_tracking?) && batch_id.present?
+      def acquire_concurrency_lock
+        return true unless concurrency_limited?
+
+        Semaphore.wait(self)
+      end
+
+      def release_concurrency_lock
+        return false unless concurrency_limited?
+
+        Semaphore.signal(self)
+      end
+
+      def handle_concurrency_conflict
+        if concurrency_on_conflict.discard?
+          destroy_pending!
+          false
+        else
+          block
+        end
+      end
+
+      def block
+        BlockedExecution.block(self)
+        reload.state
+      end
+
+      def release_next_blocked_job
+        BlockedExecution.release_one(concurrency_key)
+      end
+
+      def ready
+        result = self.class.collection.update_one(
+          { _id: bson_id, state: { "$in" => [ nil, "scheduled", "failed" ] } },
+          { "$set" => { state: "ready" }, "$unset" => terminal_unsets },
+          **SolidQueue::Mongo.session_options
+        )
+        reload
+        result.modified_count == 1 || state == "ready"
+      end
+
+      def schedule
+        ScheduledExecution.schedule(self)
+        reload.state
       end
 
       def destroy_pending!
         transaction(operation: "discard_conflicted_job") do
-          BatchExecution.complete(self) if batch_tracking?
+          BatchExecution.complete(self) if batched?
           self.class.collection.delete_one({ _id: bson_id, state: { "$ne" => "claimed" } }, **SolidQueue::Mongo.session_options)
           self.class.delete_recurring_markers([ bson_id ])
           Deduplication.release([ self ], windowed: true) if deduplicated?

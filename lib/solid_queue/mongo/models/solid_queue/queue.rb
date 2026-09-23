@@ -6,7 +6,7 @@ module SolidQueue
 
     class << self
       def all
-        Job.distinct_queue_names.map { |name| new(name) }
+        Job.distinct_values_of(:queue_name).map { |name| new(name) }
       end
 
       def find_by_name(name)
@@ -31,7 +31,7 @@ module SolidQueue
     end
 
     def clear(batch_size: 500)
-      Job.discard_ready_in_queue(name, batch_size: batch_size)
+      ReadyExecution.discard_all_in_batches(batch_size: batch_size, queue_name: name)
     end
 
     def size

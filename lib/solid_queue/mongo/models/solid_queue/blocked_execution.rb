@@ -18,7 +18,7 @@ module SolidQueue
         document && from_document(document)
       end
 
-      def release_for(concurrency_key)
+      def release_one(concurrency_key)
         SolidQueue.instrument(:release_blocked, concurrency_key: concurrency_key, released: false) do |payload|
           transaction(operation: "release_blocked") do
             document = collection.find(
@@ -52,10 +52,9 @@ module SolidQueue
       rescue PromotionLost
         false
       end
-      alias_method :release_one, :release_for
 
       def release_many(concurrency_keys)
-        Array(concurrency_keys).count { |key| release_for(key) }
+        Array(concurrency_keys).count { |concurrency_key| release_one(concurrency_key) }
       end
 
       def unblock(limit)
@@ -84,7 +83,7 @@ module SolidQueue
     end
 
     def release
-      self.class.release_for(concurrency_key)
+      self.class.release_one(concurrency_key)
     end
   end
 end

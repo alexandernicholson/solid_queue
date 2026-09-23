@@ -28,34 +28,36 @@ module SolidQueue
       end
 
       def release_for_process(process_id)
-        process_bson_id = SolidQueue::Mongo.id!(process_id)
-        instrument_release_many(claimed_for(process_id: process_bson_id))
+        release_all(claimed_for(process_id: SolidQueue::Mongo.id!(process_id)))
       end
 
       def fail_for_process(process_id, error)
-        process_bson_id = SolidQueue::Mongo.id!(process_id)
-        fail_many(claimed_for(process_id: process_bson_id), error)
+        fail_all_with(error, claimed_for(process_id: SolidQueue::Mongo.id!(process_id)))
       end
 
       def fail_orphaned(error)
-        executions = collection.aggregate([
-          { "$match" => { state: "claimed" } },
-          { "$lookup" => {
-            from: SolidQueue::Mongo.collection(:processes).name,
-            localField: "process_id", foreignField: "_id", as: "owner"
-          } },
-          { "$match" => { "owner.0" => { "$exists" => false } } },
-          { "$project" => { owner: 0 } }
-        ], read_concern: { level: :snapshot }, **SolidQueue::Mongo.session_options).map { |document| from_document(document) }
-        fail_many(executions, error)
+        fail_all_with(error, orphaned)
       end
 
-      def release_all
-        instrument_release_many(claimed_for)
+      # Without relations to scope, callers pass the executions to act on;
+      # the defaults cover every claimed execution, like the unscoped Active Record calls.
+      def release_all(executions = claimed_for)
+        SolidQueue.instrument(:release_many_claimed) do |payload|
+          payload[:size] = executions.count(&:release)
+        end
       end
 
-      def fail_all_with(error)
-        fail_many(claimed_for, error)
+      def fail_all_with(error, executions = claimed_for)
+        return 0 if executions.empty?
+
+        SolidQueue.instrument(:fail_many_claimed) do |payload|
+          failed = executions.count { |execution| execution.failed_with(error) }
+          payload[:process_ids] = executions.map(&:process_id).uniq
+          payload[:job_ids] = executions.map(&:job_id).uniq
+          payload[:size] = failed
+          payload[:error] = error
+          failed
+        end
       end
 
       def discard_all_in_batches(*)
@@ -71,27 +73,16 @@ module SolidQueue
           collection.find({ state: "claimed" }.merge(extra), **SolidQueue::Mongo.session_options).map { |doc| from_document(doc) }
         end
 
-        def instrument_release_many(executions)
-          SolidQueue.instrument(:release_many_claimed) do |payload|
-            payload[:size] = release_many(executions)
-          end
-        end
-
-        def release_many(executions)
-          executions.count(&:release)
-        end
-
-        def fail_many(executions, error)
-          return 0 if executions.empty?
-
-          SolidQueue.instrument(:fail_many_claimed) do |payload|
-            failed = executions.count { |execution| execution.failed_with(error) }
-            payload[:process_ids] = executions.map(&:process_id).uniq
-            payload[:job_ids] = executions.map(&:job_id).uniq
-            payload[:size] = failed
-            payload[:error] = error
-            failed
-          end
+        def orphaned
+          collection.aggregate([
+            { "$match" => { state: "claimed" } },
+            { "$lookup" => {
+              from: SolidQueue::Mongo.collection(:processes).name,
+              localField: "process_id", foreignField: "_id", as: "owner"
+            } },
+            { "$match" => { "owner.0" => { "$exists" => false } } },
+            { "$project" => { owner: 0 } }
+          ], read_concern: { level: :snapshot }, **SolidQueue::Mongo.session_options).map { |document| from_document(document) }
         end
     end
 
@@ -100,9 +91,10 @@ module SolidQueue
 
       result = execute
       if result.success?
-        finalizing { finalize_success }
+        finalizing { finished }
       else
-        finalizing { finalize_failure(result.error) }
+        # failed_with already wraps its own finalization
+        failed_with(result.error)
         raise result.error
       end
     end
@@ -128,7 +120,11 @@ module SolidQueue
     end
 
     def failed_with(error)
-      finalizing { finalize_failure(error) }
+      finalizing do
+        finalize("failed", error: FailedExecution.error_from(error), finished_at: Time.current) do
+          BatchExecution.complete(job) if batched?
+        end
+      end
     end
 
     private
@@ -148,10 +144,10 @@ module SolidQueue
         raise
       end
 
-      def finalize_success
+      def finished
         finalize("finished", finished_at: Time.current) do
-          BatchExecution.complete(job) if batch_tracking?
-          Deduplication.release([ job ]) if deduplicated?
+          BatchExecution.complete(job) if batched?
+          job.release_deduplication
           Job.delete_recurring_markers([ bson_id ]) unless SolidQueue.preserve_finished_jobs?
           unless SolidQueue.preserve_finished_jobs?
             self.class.collection.delete_one(
@@ -159,12 +155,6 @@ module SolidQueue
               **SolidQueue::Mongo.session_options
             )
           end
-        end
-      end
-
-      def finalize_failure(error)
-        finalize("failed", error: FailedExecution.error_from(error), finished_at: Time.current) do
-          BatchExecution.complete(job) if batch_tracking?
         end
       end
 
@@ -206,10 +196,6 @@ module SolidQueue
           { "$set" => { started_at: Time.current } },
           **SolidQueue::Mongo.session_options
         ).modified_count == 1
-      end
-
-      def batch_tracking?
-        Batch.migrated? && batch_id.present?
       end
 
       def still_claimed?
