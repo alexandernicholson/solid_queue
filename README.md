@@ -21,10 +21,13 @@ Solid Queue's default backend supports SQL databases such as MySQL, PostgreSQL, 
 - [Configuration](#configuration)
   - [Optional scheduler configuration](#optional-scheduler-configuration)
   - [Queue order and priorities](#queue-order-and-priorities)
+  - [Worker priority ranges](#worker-priority-ranges)
   - [Queues specification and performance](#queues-specification-and-performance)
   - [Threads, processes, and signals](#threads-processes-and-signals)
   - [Database configuration](#database-configuration)
   - [Other configuration settings](#other-configuration-settings)
+  - [Draining queues and working off jobs](#draining-queues-and-working-off-jobs)
+  - [Operations tasks](#operations-tasks)
   - [Validating the configuration](#validating-the-configuration)
 - [Lifecycle hooks](#lifecycle-hooks)
   - [Execution hooks](#execution-hooks)
@@ -506,6 +509,8 @@ For SQL, set `threads` no higher than the queue database pool size minus two as 
   Fiber workers require the `async` gem and fiber-scoped isolated execution state. In Rails apps, set `config.active_support.isolation_level = :fiber` before using `fibers`; Solid Queue refuses to boot otherwise. For **SQL** on Rails 7.2 and later, a practical starting point is usually `3-5` queue database connections per worker process rather than matching `fibers`, because ordinary Active Record query paths can release connections between non-blocking waits. On Rails 7.1, size the SQL pool more conservatively. For **MongoDB**, budget the configured fiber count plus polling and heartbeat in the Mongo driver pool.
 - `processes`: this is the number of worker processes that will be forked by the supervisor with the settings given. By default, this is `1`, just a single process. This setting is useful if you want to dedicate more than one CPU core to a queue or queues with the same configuration. Only workers have this setting. This works with both `threads` and `fibers` workers as long as the supervisor is running in the default `fork` mode. **Note**: this option is ignored only when the supervisor itself is [running in `async` mode](#fork-vs-async-mode).
 - `concurrency_maintenance`: whether the dispatcher will perform the concurrency maintenance work. This is `true` by default, and it's useful if you don't use any [concurrency controls](#concurrency-controls) and want to disable it or if you run multiple dispatchers and want some of them to just dispatch jobs without doing anything else.
+- `min_priority` / `max_priority`: limit a worker to jobs within this priority range (inclusive, either bound optional). See [worker priority ranges](#worker-priority-ranges).
+- `exit_on_complete`: stop the supervisor once this worker finds nothing left to run. See [draining queues](#draining-queues-and-working-off-jobs).
 - `batch_maintenance`: whether the dispatcher will sweep stalled [batches](#batch-jobs) as part of its maintenance work, on the same timer as concurrency maintenance (see [batch maintenance](#batch-maintenance)). This is `true` by default; disable it if you don't use batches, or if you run multiple dispatchers and want only some of them doing maintenance work.
 
 
@@ -531,6 +536,21 @@ Active Job also supports positive integer priorities when enqueuing jobs. In Sol
 This is useful when you run jobs with different importance or urgency in the same queue. Within the same queue, jobs will be picked in order of priority, but in a list of queues, the queue order takes precedence, so in the previous example with `real_time,background`, jobs in the `real_time` queue will be picked before jobs in the `background` queue, even if those in the `background` queue have a higher priority (smaller value) set.
 
 We recommend not mixing queue order with priorities but either choosing one or the other, as that will make job execution order more straightforward for you.
+
+### Worker priority ranges
+
+A worker can take only jobs within a priority range, for example to dedicate processes to urgent work:
+
+```yml
+production:
+  workers:
+    - queues: "*"
+      max_priority: 10
+    - queues: "*"
+      min_priority: 11
+```
+
+Either bound can be omitted, and both are inclusive. `min_priority` can't be greater than `max_priority`. The range narrows the regular poll, which uses the same indexes on both backends. The worker's registered metadata and process title show it, e.g. `waiting for jobs in * with priorities 0..10`.
 
 ### Queues specification and performance
 
@@ -660,10 +680,42 @@ There are several settings that control how Solid Queue works that you can set a
 - `fork_boot_timeout`: how long a forked process can take to finish booting before the supervisor replaces it—defaults to 5 minutes. It only applies in the default `fork` mode.
 - `shutdown_timeout`: time the supervisor will wait since it sent the `TERM` signal to its supervised processes before sending a `QUIT` version to them requesting immediate termination—defaults to 5 seconds.
 - `silence_polling`: whether to silence persistence logs emitted when polling for workers and dispatchers—defaults to `true`. This covers Active Record and, on the MongoDB backend, the Ruby Driver logger. On Rails 8.2 and later, SQL users can go further and disable SQL notifications for the whole queue database connection by setting `sql_notifications: false` in `database.yml`. This silences not only polling but also heartbeats, semaphores, maintenance queries, and everything else Solid Queue does on that SQL connection, both in logs and for `sql.active_record` subscribers.
+- `procline_prefix`: text to put before Solid Queue's process titles, e.g. `myapp solid-queue-worker(…): …`. It's `nil` by default.
 - `supervisor_pidfile`: path to a pidfile that the supervisor will create when booting to prevent running more than one supervisor in the same host, or in case you want to use it for a health check. It's `nil` by default.
 - `preserve_finished_jobs`: whether to keep finished jobs (SQL rows or MongoDB documents)—defaults to `true`. On MongoDB, removing a finished recurring job also removes its deduplication marker; retain jobs for the period in which duplicate runs must be prevented.
 - `clear_finished_jobs_after`: period to keep finished jobs when preservation is enabled—defaults to 1 day. The installer configures [a recurring cleanup job](#recurring-tasks) to clear finished jobs every hour on the 12th minute in batches. Adjust `recurring.yml` to change this; failed jobs are not cleared by this cleanup.
 - `default_concurrency_control_period`: the value to be used as the default for the `duration` parameter in [concurrency controls](#concurrency-controls). It defaults to 3 minutes.
+
+### Draining queues and working off jobs
+
+To process everything that's queued and then exit, for example in a one-off container or a CI step, start the supervisor with `--exit-on-complete`, or set `exit_on_complete: true` on a worker:
+
+```bash
+bin/jobs --exit-on-complete
+```
+
+The supervisor shuts down gracefully when either of these workers finds all three conditions met: its pool is idle, no ready job is left in its queues and priority range, and no scheduled job there is due. Future scheduled jobs and jobs in other queues don't keep it running. This works in `fork` and `async` modes and emits `drained.solid_queue`. Keep a dispatcher configured so scheduled jobs that become due are dispatched.
+
+To run jobs inline in the current thread instead, for example in a test or a console, use `SolidQueue.work_off`:
+
+```ruby
+result = SolidQueue.work_off(queues: "*", limit: 100, priority: nil)
+successes, failures = result.to_a
+```
+
+It dispatches due scheduled jobs, then claims and performs ready jobs one at a time until `limit` jobs have run or none are left, and emits `work_off.solid_queue`. A job that fails is counted in `failures` and handled by the usual [failed jobs](#failed-jobs-and-retries) path rather than raised. While it runs, it's registered as a `Worker` process named `work_off-<pid>-…`.
+
+### Operations tasks
+
+```bash
+# Exits 1 and prints the count and the oldest wait when ready jobs have waited longer than 300 seconds
+bin/rails "solid_queue:check_latency[300]"
+
+# Discards ready, scheduled, blocked and failed jobs in one queue, or in all queues when omitted
+bin/rails "solid_queue:clear[default]"
+```
+
+`check_latency` measures from when a job became due and emits `check_latency.solid_queue`, so you can use it as a health check. `clear` leaves claimed jobs to finish. Both work on the SQL and MongoDB backends.
 
 ### Validating the configuration
 

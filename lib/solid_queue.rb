@@ -106,6 +106,12 @@ module SolidQueue
     end
   end
 
+  mattr_accessor :procline_prefix
+
+  def work_off(...)
+    WorkOff.new(...).run
+  end
+
   delegate :on_start, :on_stop, :on_exit, to: Supervisor
 
   ExecutionHooks::KINDS.each do |kind|

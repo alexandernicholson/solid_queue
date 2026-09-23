@@ -9,7 +9,8 @@ module PersistenceContract
         concurrency_limited? deduplicated? unblock_next_blocked_job batch run_time_limit display_name ]
     },
     "SolidQueue::ReadyExecution" => {
-      class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs
+        latency count_waiting_longer_than discard_all_in_queue ],
       instance: %i[ job job_id discard ]
     },
     "SolidQueue::ClaimedExecution" => {
@@ -18,15 +19,18 @@ module PersistenceContract
       instance: %i[ job job_id process_id started_at timeout_at perform release failed_with discard ]
     },
     "SolidQueue::FailedExecution" => {
-      class: %i[ retry_all discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ retry_all discard_all_in_batches discard_all_from_jobs
+        discard_all_in_queue ],
       instance: %i[ job job_id retry discard exception_class message backtrace ]
     },
     "SolidQueue::ScheduledExecution" => {
-      class: %i[ dispatch_next_batch discard_all_in_batches discard_all_from_jobs none? ],
+      class: %i[ dispatch_next_batch discard_all_in_batches discard_all_from_jobs none?
+        due_count_across discard_all_in_queue ],
       instance: %i[ job job_id discard ]
     },
     "SolidQueue::BlockedExecution" => {
-      class: %i[ unblock release_many release_one discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ unblock release_many release_one discard_all_in_batches discard_all_from_jobs
+        discard_all_in_queue ],
       instance: %i[ job job_id release discard ]
     },
     "SolidQueue::Semaphore" => {
@@ -69,5 +73,11 @@ module PersistenceContract
     end
 
     assert_empty missing, "Missing persistence operations: #{missing.join(", ")}"
+  end
+
+  def test_claims_and_counts_accept_a_priority_range
+    [ [ "SolidQueue::ReadyExecution", :claim ], [ "SolidQueue::ReadyExecution", :aggregated_count_across ], [ "SolidQueue::ScheduledExecution", :due_count_across ] ].each do |model_name, operation|
+      assert_includes model_name.constantize.method(operation).parameters, [ :key, :priority ], "#{model_name}.#{operation} takes no priority: range"
+    end
   end
 end
