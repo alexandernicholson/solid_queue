@@ -52,6 +52,18 @@ class CliTest < ActiveSupport::TestCase
     end
   end
 
+  test "exit-on-complete flag starts a supervisor whose workers exit on complete" do
+    SolidQueue::Supervisor.expects(:start).with(has_entry(exit_on_complete: true))
+
+    SolidQueue::Cli.start([ "start", "--exit-on-complete" ])
+  end
+
+  test "exit_on_complete option applies to configured workers" do
+    config = configuration_from_cli(exit_on_complete: true, skip_recurring: true)
+
+    assert config.configured_processes.select { |process| process.kind == :worker }.all? { |process| process.attributes[:exit_on_complete] }
+  end
+
   test "check exits 0 and prints OK message for a valid configuration" do
     out, err = capture_io do
       assert_nothing_raised { SolidQueue::Cli.start([ "check", "--skip-recurring" ]) }

@@ -91,6 +91,40 @@ class ConfigurationTest < ActiveSupport::TestCase
     end
   end
 
+  test "workers take a priority range" do
+    configuration = SolidQueue::Configuration.new(workers: [ { queues: "*", min_priority: 0, max_priority: 10 }, { queues: "*", max_priority: 5 } ], dispatchers: [], skip_recurring: true)
+
+    assert configuration.valid?
+    assert_processes configuration, :worker, 2, min_priority: [ 0, nil ], max_priority: [ 10, 5 ]
+  end
+
+  test "workers reject a min_priority greater than their max_priority" do
+    configuration = SolidQueue::Configuration.new(workers: [ { queues: "*", min_priority: 10, max_priority: 1 } ], dispatchers: [], skip_recurring: true)
+
+    assert_not configuration.valid?
+    assert_equal [ "Workers can't have a `min_priority` (10) greater than their `max_priority` (1)." ], configuration.errors.full_messages
+  end
+
+  test "workers reject priority bounds that aren't integers" do
+    configuration = SolidQueue::Configuration.new(workers: [ { queues: "*", min_priority: "high" }, { queues: "*", max_priority: 1.5 } ], dispatchers: [], skip_recurring: true)
+
+    assert_not configuration.valid?
+    assert_equal [ "Workers' `min_priority` must be an integer, got \"high\".", "Workers' `max_priority` must be an integer, got 1.5." ], configuration.errors.full_messages
+  end
+
+  test "exit_on_complete applies to every configured worker" do
+    configuration = SolidQueue::Configuration.new(workers: [ { queues: "a" }, { queues: "b", exit_on_complete: false } ], dispatchers: [ { batch_size: 10 } ], skip_recurring: true, exit_on_complete: true)
+
+    assert_processes configuration, :worker, 2, exit_on_complete: [ true, true ]
+    assert_processes configuration, :dispatcher, 1, exit_on_complete: nil
+  end
+
+  test "workers don't exit on complete unless configured to" do
+    configuration = SolidQueue::Configuration.new(workers: [ { queues: "a" }, { queues: "b", exit_on_complete: true } ], dispatchers: [], skip_recurring: true)
+
+    assert_processes configuration, :worker, 2, exit_on_complete: [ nil, true ]
+  end
+
   test "fiber worker size inflates required database pool size on Rails 7.1" do
     skip if fiber_workers_release_connections_between_queries?
 

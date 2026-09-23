@@ -6,7 +6,7 @@ module SolidQueue
     include ActiveModel::Validations::Callbacks
 
     validate :ensure_configured_processes, :ensure_valid_recurring_tasks
-    validate :ensure_valid_worker_execution_options
+    validate :ensure_valid_worker_execution_options, :ensure_valid_worker_priority_ranges
     validate :ensure_fiber_workers_have_required_dependency, :ensure_fiber_workers_use_supported_isolation_level
     validate :warn_about_incorrectly_sized_database_pool, :warn_about_missing_config_files
 
@@ -134,6 +134,21 @@ module SolidQueue
         end
       end
 
+      def ensure_valid_worker_priority_ranges
+        workers_options.each do |options|
+          bounds = options.slice(:min_priority, :max_priority).compact
+          invalid = bounds.reject { |_, value| value.is_a?(Integer) }
+
+          invalid.each do |bound, value|
+            errors.add(:base, "Workers' `#{bound}` must be an integer, got #{value.inspect}.")
+          end
+
+          if invalid.empty? && bounds.size == 2 && bounds[:min_priority] > bounds[:max_priority]
+            errors.add(:base, "Workers can't have a `min_priority` (#{bounds[:min_priority]}) greater than their `max_priority` (#{bounds[:max_priority]}).")
+          end
+        end
+      end
+
       def ensure_fiber_workers_have_required_dependency
         return unless workers_options.any? { |options| fiber_worker?(options) }
 
@@ -196,6 +211,7 @@ module SolidQueue
           end
 
           defaults = worker_defaults_for(worker_options)
+          worker_options = worker_options.merge(exit_on_complete: true) if options[:exit_on_complete]
           processes.times.map { Process.new(:worker, worker_options.with_defaults(defaults)) }
         end
       end

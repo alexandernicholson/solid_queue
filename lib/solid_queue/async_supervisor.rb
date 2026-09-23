@@ -6,7 +6,7 @@ module SolidQueue
 
     def stop
       super
-      @thread&.join
+      @thread&.join unless @thread == Thread.current
     end
 
     private
@@ -18,6 +18,8 @@ module SolidQueue
       end
 
       def check_and_replace_terminated_processes
+        return stop_after_drain if process_instances.values.any? { |instance| instance.try(:drained?) }
+
         terminated_threads = process_instances.select { |thread_id, instance| !instance.alive? }
         terminated_threads.each { |thread_id, _| replace_thread(thread_id) }
       end
@@ -31,6 +33,14 @@ module SolidQueue
 
             start_process(configured_processes.delete(thread_id))
           end
+        end
+      end
+
+      def stop_after_drain
+        if standalone?
+          handle_signal(:TERM)
+        else
+          stop
         end
       end
 

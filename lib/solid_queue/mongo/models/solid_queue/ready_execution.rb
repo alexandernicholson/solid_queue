@@ -10,7 +10,7 @@ module SolidQueue
     end
 
     class << self
-      def claim(queue_list, limit, process_id)
+      def claim(queue_list, limit, process_id, priority: nil)
         process_bson_id = SolidQueue::Mongo.id!(process_id)
         claimed = []
         candidates_seen = 0
@@ -19,7 +19,7 @@ module SolidQueue
           selectors_for(queue_list).each do |queue_name|
             break if limit <= 0
 
-            executions, seen = claim_from_queue(queue_name, limit, process_bson_id)
+            executions, seen = claim_from_queue(queue_name, limit, process_bson_id, priority)
             candidates_seen += seen
             claimed.concat(executions)
             limit -= executions.size
@@ -56,12 +56,22 @@ module SolidQueue
         claimed
       end
 
-      def aggregated_count_across(queue_list)
+      def aggregated_count_across(queue_list, priority: nil)
         selectors_for(queue_list).sum do |queue_name|
           filter = { state: "ready" }
           filter[:queue_name] = queue_name if queue_name
-          collection.count_documents(filter, **SolidQueue::Mongo.session_options)
+          collection.count_documents(prioritized_within(filter, priority), **SolidQueue::Mongo.session_options)
         end
+      end
+
+      def latency
+        oldest = collection.find({ state: "ready", scheduled_at: { "$type" => "date" } }, **SolidQueue::Mongo.session_options)
+          .sort(scheduled_at: 1).limit(1).projection(scheduled_at: 1).first
+        oldest ? [ (Time.current - oldest["scheduled_at"]).to_i, 0 ].max : 0
+      end
+
+      def count_waiting_longer_than(age)
+        collection.count_documents({ state: "ready", scheduled_at: { "$lt" => age.seconds.ago } }, **SolidQueue::Mongo.session_options)
       end
 
       def queued_as(queue_name)
@@ -76,8 +86,8 @@ module SolidQueue
 
         MAX_IN_FLIGHT_CANDIDATES = 10_000
 
-        def claim_from_queue(queue_name, limit, process_id)
-          candidate_ids = reserve_candidates(queue_name, limit)
+        def claim_from_queue(queue_name, limit, process_id, priority)
+          candidate_ids = reserve_candidates(queue_name, limit, priority)
           return [ [], 0 ] if candidate_ids.empty?
 
           token = BSON::ObjectId.new
@@ -101,7 +111,7 @@ module SolidQueue
           end
         end
 
-        def reserve_candidates(queue_name, limit)
+        def reserve_candidates(queue_name, limit, priority)
           claim_lock.synchronize do
             available = MAX_IN_FLIGHT_CANDIDATES - in_flight_candidates.size
             next [] unless available.positive?
@@ -109,6 +119,7 @@ module SolidQueue
             candidate_limit = [ limit, available ].min
             candidate_filter = { state: "ready" }
             candidate_filter[:queue_name] = queue_name if queue_name
+            candidate_filter = prioritized_within(candidate_filter, priority)
             candidate_filter[:_id] = { "$nin" => in_flight_candidates.keys } if in_flight_candidates.any?
             ids = collection.find(
               candidate_filter,

@@ -1,5 +1,6 @@
 require "test_helper"
 require "active_support/testing/method_call_assertions"
+require "minitest/mock"
 
 class WorkerTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::MethodCallAssertions
@@ -230,6 +231,18 @@ class WorkerTest < ActiveSupport::TestCase
     assert_equal 5, JobResult.where(queue_name: :background, status: "completed", value: :immediate).count
   end
 
+  test "run inline finishes when only jobs outside its priority range remain" do
+    worker = SolidQueue::Worker.new(queues: "*", threads: 3, polling_interval: 0.2, max_priority: 10)
+    worker.mode = :inline
+
+    StoreResultJob.set(priority: 5).perform_later(:in_range)
+    StoreResultJob.set(priority: 50).perform_later(:out_of_range)
+
+    Timeout.timeout(5.seconds) { worker.start }
+
+    assert_equal [ "in_range" ], JobResult.where(status: "completed").pluck(:value)
+  end
+
   test "terminate on heartbeat when unregistered" do
     old_heartbeat_interval, SolidQueue.process_heartbeat_interval = SolidQueue.process_heartbeat_interval, 1.second
 
@@ -295,7 +308,99 @@ class WorkerTest < ActiveSupport::TestCase
     assert_equal @worker.polling_interval, first_delay
   end
 
+  test "claims only jobs within its priority range" do
+    AddToBufferJob.set(priority: 5).perform_later("in range")
+    AddToBufferJob.set(priority: 50).perform_later("out of range")
+
+    worker = SolidQueue::Worker.new(queues: "background", threads: 1, polling_interval: 0.05, min_priority: 1, max_priority: 10)
+    worker.start
+
+    wait_while_with_timeout(2.seconds) { JobBuffer.values.empty? }
+    sleep 0.3
+
+    assert_equal [ "in range" ], JobBuffer.values
+    assert skip_active_record_query_cache { SolidQueue::Job.find_by(priority: 50).ready? }
+  ensure
+    worker&.stop
+  end
+
+  test "metadata shows the priority range only when one is set" do
+    { { min_priority: 1, max_priority: 10 } => "1..10", { min_priority: 5 } => "5..", { max_priority: 10 } => "..10", {} => nil }.each do |options, priorities|
+      worker = SolidQueue::Worker.new(queues: "background", polling_interval: 0.2, **options)
+
+      assert_equal priorities, worker.metadata[:priority_range]
+      assert_equal priorities && Range.new(options[:min_priority], options[:max_priority]), worker.priority_range
+    end
+  end
+
+  test "metadata shows exit_on_complete only when set" do
+    assert SolidQueue::Worker.new(queues: "background", polling_interval: 0.2, exit_on_complete: true).metadata[:exit_on_complete]
+    assert_nil SolidQueue::Worker.new(queues: "background", polling_interval: 0.2).metadata[:exit_on_complete]
+  end
+
+  test "registers the priority range in the process metadata" do
+    worker = SolidQueue::Worker.new(queues: "background", polling_interval: 0.2, min_priority: 1, max_priority: 10)
+    worker.start
+    wait_for_registered_processes(1, timeout: 1.second)
+
+    assert_metadata SolidQueue::Process.first, priority_range: "1..10"
+  ensure
+    worker&.stop
+  end
+
+  test "procline shows the priority range" do
+    previous_title = $0
+    worker = SolidQueue::Worker.new(queues: [ "background", "default" ], polling_interval: 0.2, min_priority: 1, max_priority: 10)
+
+    worker.send(:set_procline)
+    assert_match(/waiting for jobs in background,default with priorities 1\.\.10\z/, $0)
+
+    SolidQueue::Worker.new(queues: "background", polling_interval: 0.2).send(:set_procline)
+    assert_match(/waiting for jobs in background\z/, $0)
+  ensure
+    $0 = previous_title
+  end
+
+  test "procline_prefix prefixes process titles" do
+    previous_title, previous_prefix = $0, SolidQueue.procline_prefix
+
+    SolidQueue.procline_prefix = "myapp"
+    @worker.send(:set_procline)
+    assert_equal "myapp solid-queue-worker(#{SolidQueue::VERSION}): waiting for jobs in background", $0
+
+    SolidQueue.procline_prefix = nil
+    @worker.send(:set_procline)
+    assert_equal "solid-queue-worker(#{SolidQueue::VERSION}): waiting for jobs in background", $0
+  ensure
+    $0 = previous_title
+    SolidQueue.procline_prefix = previous_prefix
+  end
+
+  test "polls and claims through execution hooks when they are available" do
+    calls = Concurrent::Array.new
+    AddToBufferJob.perform_later "hooked"
+
+    with_execution_hooks(->(name, target, &block) { calls << [ name, target.equal?(@worker) ]; block.call }) do
+      @worker.start
+      wait_while_with_timeout(2.seconds) { JobBuffer.values.empty? }
+      @worker.stop
+    end
+
+    assert_equal [ "hooked" ], JobBuffer.values
+    assert_includes calls, [ :around_poll, true ]
+    assert_includes calls, [ :around_claim, true ]
+  end
+
   private
+    def with_execution_hooks(runner, &block)
+      defined_here = !defined?(SolidQueue::ExecutionHooks)
+      SolidQueue.const_set(:ExecutionHooks, Module.new { def self.run(*) = yield }) if defined_here
+
+      SolidQueue::ExecutionHooks.stub(:run, runner, &block)
+    ensure
+      SolidQueue.send(:remove_const, :ExecutionHooks) if defined_here
+    end
+
     def stub_interruptible_sleep(worker)
       delays = Thread::Queue.new
 

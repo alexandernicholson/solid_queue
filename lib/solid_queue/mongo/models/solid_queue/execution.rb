@@ -41,6 +41,12 @@ module SolidQueue
         discard_matching({ state: type.to_s }, batch_size: batch_size)
       end
 
+      def discard_all_in_queue(queue_name, batch_size: 500)
+        raise UndiscardableError, "Can't discard jobs in progress" if type == :claimed
+
+        discard_matching({ state: type.to_s, queue_name: queue_name.to_s }, batch_size: batch_size)
+      end
+
       def discard_all_from_jobs(jobs)
         ids = Array(jobs).map(&:bson_id)
         SolidQueue.instrument(:discard_all, jobs_size: ids.size, status: type) do |payload|
@@ -69,6 +75,15 @@ module SolidQueue
       private
         def scoped(filter)
           filter.merge(state: type.to_s)
+        end
+
+        def prioritized_within(filter, range)
+          return filter unless range
+
+          bounds = {}
+          bounds["$gte"] = range.begin if range.begin
+          bounds[range.exclude_end? ? "$lt" : "$lte"] = range.end if range.end
+          bounds.empty? ? filter : filter.merge(priority: bounds)
         end
 
         def discard_ids(ids, expected_state:)

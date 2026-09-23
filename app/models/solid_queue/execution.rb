@@ -46,7 +46,15 @@ module SolidQueue
 
             break if pending <= 0 || discarded == 0
           end
+
+          payload[:size]
         end
+      end
+
+      def discard_all_in_queue(queue_name, batch_size: 500)
+        raise UndiscardableError, "Can't discard jobs in progress" if type == :claimed
+
+        where(job_id: Job.where(queue_name: queue_name, finished_at: nil).select(:id)).discard_all_in_batches(batch_size: batch_size)
       end
 
       def discard_all_from_jobs(jobs)
