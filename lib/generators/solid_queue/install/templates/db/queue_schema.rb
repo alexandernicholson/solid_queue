@@ -14,6 +14,7 @@ ActiveRecord::Schema[7.1].define(version: 1) do
   create_table "solid_queue_claimed_executions", force: :cascade do |t|
     t.bigint "job_id", null: false
     t.bigint "process_id"
+    t.datetime "started_at"
     t.datetime "created_at", null: false
     t.index [ "job_id" ], name: "index_solid_queue_claimed_executions_on_job_id", unique: true
     t.index [ "process_id", "job_id" ], name: "index_solid_queue_claimed_executions_on_process_id_and_job_id"
@@ -35,6 +36,7 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.datetime "scheduled_at"
     t.datetime "finished_at"
     t.string "concurrency_key"
+    t.string "deduplication_key"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "batch_id"
@@ -120,6 +122,17 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.index [ "expires_at" ], name: "index_solid_queue_semaphores_on_expires_at"
     t.index [ "key", "value" ], name: "index_solid_queue_semaphores_on_key_and_value"
     t.index [ "key" ], name: "index_solid_queue_semaphores_on_key", unique: true
+  end
+
+  create_table "solid_queue_deduplications", force: :cascade do |t|
+    t.string "key", null: false
+    t.string "active_job_id", null: false
+    t.bigint "job_id"
+    t.datetime "expires_at"
+    t.datetime "created_at", null: false
+    t.index [ "key" ], name: "index_solid_queue_deduplications_on_key", unique: true
+    t.index [ "active_job_id" ], name: "index_solid_queue_deduplications_on_active_job_id"
+    t.index [ "expires_at" ], name: "index_solid_queue_deduplications_on_expires_at"
   end
 
   create_table "solid_queue_batches", force: :cascade do |t|

@@ -92,6 +92,7 @@ module SolidQueue
       def outstanding_query(batch_id)
         collection.find(
           { batch_id: SolidQueue::Mongo.id!(batch_id), kind: "attempt" },
+          hint: "batch_execution_attempts",
           **SolidQueue::Mongo.session_options
         ).projection(_id: 1).limit(1)
       end

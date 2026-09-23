@@ -112,6 +112,7 @@ module SolidQueue
             candidate_filter[:_id] = { "$nin" => in_flight_candidates.keys } if in_flight_candidates.any?
             ids = collection.find(
               candidate_filter,
+              hint: queue_name ? "ready_poll_by_queue_v2" : "ready_poll_all_v2",
               **SolidQueue::Mongo.session_options
             ).sort(priority: 1, _id: 1).limit(candidate_limit).batch_size(candidate_limit)
               .projection(_id: 1).map { |row| row["_id"] }
@@ -168,6 +169,7 @@ module SolidQueue
         def claimed_by_token(token, process_id, limit)
           collection.find(
             { state: "claimed", process_id: process_id, claim_token: token },
+            hint: "claimed_by_token_v2",
             **SolidQueue::Mongo.session_options
           ).sort(priority: 1, _id: 1).limit(limit).batch_size(limit).map { |doc| ClaimedExecution.from_document(doc) }
         end

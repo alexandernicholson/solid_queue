@@ -87,6 +87,8 @@ module SolidQueue
     end
 
     def perform
+      return if job.deduplicated? && !start
+
       result = execute
 
       if result.success?
@@ -100,6 +102,8 @@ module SolidQueue
     def release
       SolidQueue.instrument(:release_claimed, job_id: job.id, process_id: process_id) do
         unless_already_finalized do
+          next false if started_at?
+
           job.dispatch_bypassing_concurrency_limits
           destroy!
         end
@@ -124,6 +128,10 @@ module SolidQueue
         raise FinalizationError.new(self, cause: error) if still_claimed?
 
         raise
+      end
+
+      def start
+        self.class.where(id: id, started_at: nil).update_all(started_at: Time.current) == 1
       end
 
       def execute

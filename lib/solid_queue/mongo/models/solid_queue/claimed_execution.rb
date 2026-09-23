@@ -96,6 +96,8 @@ module SolidQueue
     end
 
     def perform
+      return if deduplicated? && !start
+
       result = execute
       if result.success?
         finalizing { finalize_success }
@@ -111,7 +113,7 @@ module SolidQueue
         transaction(operation: "release_claimed_job") do
           released = false
           result = self.class.collection.update_one(
-            ownership_filter,
+            ownership_filter.merge(started_at: nil),
             { "$set" => { state: "ready" }, "$unset" => claim_unsets },
             **SolidQueue::Mongo.session_options
           )
@@ -149,6 +151,7 @@ module SolidQueue
       def finalize_success
         finalize("finished", finished_at: Time.current) do
           BatchExecution.complete(job) if batch_tracking?
+          Deduplication.release([ job ]) if deduplicated?
           Job.delete_recurring_markers([ bson_id ]) unless SolidQueue.preserve_finished_jobs?
           unless SolidQueue.preserve_finished_jobs?
             self.class.collection.delete_one(
@@ -194,7 +197,15 @@ module SolidQueue
       end
 
       def claim_unsets
-        { process_id: true, claim_token: true, claimed_at: true }
+        { process_id: true, claim_token: true, claimed_at: true, started_at: true }
+      end
+
+      def start
+        self.class.collection.update_one(
+          ownership_filter.merge(started_at: nil),
+          { "$set" => { started_at: Time.current } },
+          **SolidQueue::Mongo.session_options
+        ).modified_count == 1
       end
 
       def batch_tracking?

@@ -55,6 +55,7 @@ module SolidQueue
     initializer "solid_queue.active_job.extensions" do
       ActiveSupport.on_load :active_job do
         include ActiveJob::ConcurrencyControls
+        include ActiveJob::Deduplication
 
         if defined?(::ActiveRecord::Railtie)
           ActiveSupport.on_load :active_record do
@@ -66,8 +67,11 @@ module SolidQueue
       end
     end
 
-    initializer "solid_queue.mongoid_integration", after: "solid_queue.active_job.extensions" do
-      SolidQueue::MongoidIntegration.install! if SolidQueue.mongodb? || defined?(::Mongoid)
+    initializer "solid_queue.bson_serializer", after: "solid_queue.active_job.extensions" do
+      if SolidQueue.mongodb?
+        require "active_job/serializers/bson_object_id_serializer"
+        ActiveJob::Serializers.add_serializers(ActiveJob::Serializers::BsonObjectIdSerializer)
+      end
     end
 
     initializer "solid_queue.deprecator" do |app|

@@ -62,7 +62,7 @@ jobs:
           retention-days: 30
 
   mongodb-tests:
-    name: MongoDB / ${{ matrix.lane }} / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }} / mongo ${{ matrix.mongo-driver-version }} / Mongoid ${{ matrix.mongoid-version }} / MongoDB ${{ matrix.mongodb-version }}
+    name: MongoDB / ${{ matrix.lane }} / Ruby ${{ matrix.ruby-version }} / Rails ${{ matrix.rails-version }} / mongo ${{ matrix.mongo-driver-version }} / MongoDB ${{ matrix.mongodb-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -73,15 +73,11 @@ jobs:
             ruby-version: "4.0.2"
             rails-version: "8.0.5.1"
             mongo-driver-version: "2.26.0"
-            mongoid-version: "7.6.1"
-            mongoid-git: https://github.com/tablecheck/mongoid-ultra.git
-            mongoid-ref: fad21072de6cb539a8addec278a6beb4bf1a5321
             mongodb-version: "8.0"
           - lane: latest
             ruby-version: "4.0.7"
             rails-version: "8.1.3.1"
             mongo-driver-version: "2.26.0"
-            mongoid-version: "9.1.1"
             mongodb-version: "8.3"
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/mongodb.gemfile
@@ -90,9 +86,6 @@ jobs:
       MONGODB_STANDALONE_URI: mongodb://127.0.0.1:27018/solid_queue_standalone_test?directConnection=true
       RAILS_VERSION: ${{ matrix.rails-version }}
       MONGO_DRIVER_VERSION: ${{ matrix.mongo-driver-version }}
-      MONGOID_VERSION: ${{ matrix.mongoid-version }}
-      MONGOID_GIT: ${{ matrix.mongoid-git }}
-      MONGOID_REF: ${{ matrix.mongoid-ref }}
       RAILS_ENV: test
     steps:
       - name: Checkout code
@@ -130,9 +123,6 @@ jobs:
           cache-version: 1
       - name: Run MongoDB tests
         run: bundle exec ruby -Itest -e 'Dir["test/mongodb/**/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
-      - name: Run Mongoid integration tests
-        run: |
-          bundle exec ruby -Itest -e 'Dir["test/mongoid/**/*_test.rb"].sort_by { |file| [ File.basename(file) == "arguments_test.rb" ? 1 : 0, file ] }.each { |file| require File.expand_path(file) }'
       - name: Upload MongoDB logs on failure
         if: ${{ failure() }}
         run: |

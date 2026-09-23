@@ -50,6 +50,7 @@ class ActiveSupport::TestCase
     SolidQueue::Job.destroy_all
     SolidQueue::Process.destroy_all
     SolidQueue::Semaphore.delete_all
+    SolidQueue::Deduplication.delete_all
     SolidQueue::RecurringTask.delete_all
     SolidQueue::ScheduledExecution.delete_all
     SolidQueue::ReadyExecution.delete_all

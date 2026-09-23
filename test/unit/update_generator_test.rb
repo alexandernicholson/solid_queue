@@ -80,6 +80,15 @@ class UpdateGeneratorTest < Rails::Generators::TestCase
     end
   end
 
+  test "copies the deduplication migration" do
+    run_generator
+
+    assert_migration "db/queue_migrate/add_deduplication_to_solid_queue.rb" do |migration|
+      assert_match(/create_table :solid_queue_deduplications, if_not_exists: true/, migration)
+      assert_match(/add_column :solid_queue_claimed_executions, :started_at, :datetime, if_not_exists: true/, migration)
+    end
+  end
+
   private
     def with_migration_template(name)
       Dir.mktmpdir do |source_root|

@@ -11,14 +11,12 @@ class MongoHealthTest < MongoTestCase
   def setup
     super
     @mongo_client = SolidQueue.mongo_client
-    @mongoid_client = SolidQueue.mongoid_client
     @mongo_url = SolidQueue.mongo_url
   end
 
   def teardown
     SolidQueue::Mongo.reset!
     SolidQueue.mongo_client = @mongo_client
-    SolidQueue.mongoid_client = @mongoid_client
     SolidQueue.mongo_url = @mongo_url
     SolidQueue::Mongo.prepare!
     super
@@ -137,13 +135,12 @@ class MongoHealthTest < MongoTestCase
   end
 
   private
-    def assert_fork_safe_client(client: nil, mongoid_client: nil)
+    def assert_fork_safe_client(client: nil)
       skip "fork is unavailable" unless ::Process.respond_to?(:fork)
 
       SolidQueue::Mongo.reset!
       SolidQueue.mongo_url = MONGODB_TEST_URI
       SolidQueue.mongo_client = client
-      SolidQueue.mongoid_client = mongoid_client
       parent_client = SolidQueue::Mongo.client
       parent_client[FORK_COLLECTION].delete_many({})
       session = parent_client.start_session

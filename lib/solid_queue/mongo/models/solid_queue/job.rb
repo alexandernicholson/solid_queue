@@ -1,10 +1,13 @@
 # frozen_string_literal: true
 
+require "active_job/enqueuing"
+
 module SolidQueue
   class Job < Record
     collection_name :jobs
 
     class EnqueueError < StandardError; end
+    class DuplicateError < ActiveJob::EnqueueError; end
 
     class ClassMissingError < NameError
       def self.for(job)
@@ -30,12 +33,14 @@ module SolidQueue
     field :created_at
     field :finished_at
     field :concurrency_key
+    field :deduplication_key
     field :batch_id
     field :state
     field :process_id
     field :claim_token
     field :claim_generation, default: 0
     field :claimed_at
+    field :started_at
     field :expires_at
     field :error
 
@@ -44,13 +49,15 @@ module SolidQueue
         active_job.scheduled_at = scheduled_at
 
         attributes = attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: Time.current)
-        job = if attributes[:concurrency_key].blank? && attributes[:batch_id].nil?
+        job = if attributes[:concurrency_key].blank? && attributes[:batch_id].nil? && attributes[:deduplication_key].nil?
           attributes[:state] = scheduled_at > Time.current ? "scheduled" : "ready"
           ensure_enqueue_document_size!(attributes)
           create!(attributes)
         else
           transaction(operation: "enqueue_job") do
             created = new(attributes)
+            next created.tap(&:duplicate!) unless Deduplication.reserve(created, active_job)
+
             BatchExecution.create_all_from_jobs([ created ]) if batch_tracking?
             if !created.due?
               created.state = "scheduled"
@@ -58,6 +65,7 @@ module SolidQueue
               created.state = "ready"
             elsif created.concurrency_on_conflict.to_s == "discard"
               BatchExecution.complete(created) if created.batched?
+              Deduplication.release([ created ], windowed: true) if created.deduplicated?
               next created
             else
               created.state = "blocked"
@@ -73,6 +81,7 @@ module SolidQueue
 
         active_job.provider_job_id = job.id if job.persisted?
         active_job.successfully_enqueued = job.persisted?
+        raise DuplicateError, "#{active_job.class.name} is already enqueued as #{active_job.deduplication_key}" if job.duplicate?
         job
       rescue EnqueueError, SolidQueue::PersistenceError, SolidQueue::Mongo::TransactionDeadlineExceeded, *SolidQueue::Mongo::DRIVER_ERRORS => error
         active_job.successfully_enqueued = false
@@ -83,19 +92,26 @@ module SolidQueue
         current_batch_id = Batch.current_batch_id
         now = Time.current
         jobs = []
+        duplicates = []
 
         transaction(operation: "enqueue_jobs") do
-          documents = active_jobs.map do |active_job|
+          duplicates = []
+          documents = active_jobs.filter_map do |active_job|
             active_job.scheduled_at ||= now
             active_job.batch_id = current_batch_id || active_job.batch_id
-            attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: now).tap do |document|
-              if active_job.scheduled_at > now
-                document[:state] = "scheduled"
-              elsif document[:concurrency_key].blank?
-                document[:state] = "ready"
-              end
-              ensure_enqueue_document_size!(document)
+            document = attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: now)
+            unless Deduplication.reserve(from_document(document), active_job)
+              duplicates << active_job
+              next
             end
+
+            if active_job.scheduled_at > now
+              document[:state] = "scheduled"
+            elsif document[:concurrency_key].blank?
+              document[:state] = "ready"
+            end
+            ensure_enqueue_document_size!(document)
+            document
           end
 
           unless documents.empty?
@@ -115,6 +131,7 @@ module SolidQueue
             active_job.successfully_enqueued = true
           else
             active_job.successfully_enqueued = false
+            active_job.enqueue_error = DuplicateError.new("#{active_job.class.name} is already enqueued as #{active_job.deduplication_key}") if duplicates.include?(active_job)
           end
         end
         active_jobs.count(&:successfully_enqueued?)
@@ -229,6 +246,7 @@ module SolidQueue
             class_name: active_job.class.name,
             arguments: ActiveSupport::JSON.encode(active_job.serialize),
             concurrency_key: active_job.concurrency_key,
+            deduplication_key: active_job.try(:deduplication_key),
             batch_id: active_job.batch_id.present? ? SolidQueue::Mongo.id!(active_job.batch_id) : nil
           }.compact
         end
@@ -328,6 +346,18 @@ module SolidQueue
       concurrency_key.present? && job_class.present?
     end
 
+    def deduplicated?
+      deduplication_key.present?
+    end
+
+    def duplicate!
+      @duplicate = true
+    end
+
+    def duplicate?
+      @duplicate == true
+    end
+
     def job_class
       @job_class ||= class_name.safe_constantize
     end
@@ -409,6 +439,7 @@ module SolidQueue
         previous_state = previous["state"] || previous[:state]
         reload
         BatchExecution.complete(self) if batch_tracking?
+        Deduplication.release([ self ]) if deduplicated?
         unless SolidQueue.preserve_finished_jobs?
           self.class.delete_recurring_markers([ bson_id ])
           self.class.collection.delete_one({ _id: bson_id, state: "finished" }, **SolidQueue::Mongo.session_options)
@@ -511,11 +542,12 @@ module SolidQueue
           BatchExecution.complete(self) if batch_tracking?
           self.class.collection.delete_one({ _id: bson_id, state: { "$ne" => "claimed" } }, **SolidQueue::Mongo.session_options)
           self.class.delete_recurring_markers([ bson_id ])
+          Deduplication.release([ self ], windowed: true) if deduplicated?
         end
       end
 
       def claim_unsets
-        { process_id: true, claim_token: true, claimed_at: true }
+        { process_id: true, claim_token: true, claimed_at: true, started_at: true }
       end
 
       def terminal_unsets

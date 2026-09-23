@@ -54,6 +54,11 @@ module SolidQueue
           { key: { batch_id: 1, created_at: 1 }, name: "batch_execution_members" },
           { key: { batch_id: 1, active_job_id: 1 }, name: "batch_logical_jobs" },
           { key: { batch_id: 1 }, name: "batch_execution_attempts", partial_filter_expression: { kind: "attempt" } }
+        ],
+        deduplications: [
+          { key: { key: 1 }, name: "deduplication_key", unique: true },
+          { key: { active_job_id: 1 }, name: "deduplication_active_job" },
+          { key: { expires_at: 1 }, name: "deduplication_expiration", expire_after: 0 }
         ]
       }.freeze
 

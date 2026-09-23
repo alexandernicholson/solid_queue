@@ -69,6 +69,7 @@ module SolidQueue
         loop do
           ids = collection.find(
             { expires_at: { "$lt" => now } },
+            hint: "semaphore_expiration",
             **SolidQueue::Mongo.session_options
           ).projection(_id: 1).sort(expires_at: 1, _id: 1).limit(batch_size)
             .map { |document| document.fetch("_id") }

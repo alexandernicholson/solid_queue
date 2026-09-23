@@ -20,6 +20,7 @@ module SolidQueue
       def dispatch_next_batch(batch_size)
         jobs = collection.find(
           { state: "scheduled", scheduled_at: { "$lte" => Time.current } },
+          hint: "scheduled_dispatch_v2",
           **SolidQueue::Mongo.session_options
         ).sort(scheduled_at: 1, priority: 1, _id: 1).limit(batch_size).map { |document| Job.from_document(document) }
         return 0 if jobs.empty?

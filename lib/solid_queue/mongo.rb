@@ -11,7 +11,7 @@ require_relative "mongo/document"
 
 module SolidQueue
   module Mongo
-    COLLECTIONS = %i[jobs processes semaphores pauses recurring_tasks recurring_executions batches batch_executions].freeze
+    COLLECTIONS = %i[jobs processes semaphores pauses recurring_tasks recurring_executions batches batch_executions deduplications].freeze
     DRIVER_ERRORS = [
       ::Mongo::Error,
       ::Mongo::Error::AuthError,
@@ -150,24 +150,14 @@ module SolidQueue
       def after_fork!
         lifecycle_lock.synchronize do
           inherited_client = @client || resolve_configured_client
-          replacements = if defined?(SolidQueue::MongoidIntegration)
-            SolidQueue::MongoidIntegration.after_fork!
-          else
-            {}
-          end
           Monitoring.forget!(inherited_client) if inherited_client
 
           # Closing or reconnecting an inherited client asks the server to end
           # sessions that still belong to the parent process. Build an
           # independent client instead and let the child OS discard inherited
           # sockets when it exits.
-          if inherited_client && replacements.key?(inherited_client.__id__)
-            @client = replacements.fetch(inherited_client.__id__)
-            @owns_client = false
-          else
-            @client = clone_client_for_fork(inherited_client) if inherited_client
-            @owns_client = !!@client
-          end
+          @client = clone_client_for_fork(inherited_client) if inherited_client
+          @owns_client = !!@client
           @client_pid = ::Process.pid if @client
           @client_source = SolidQueue.mongo_client if @client
           @collections = nil
@@ -189,9 +179,7 @@ module SolidQueue
       end
 
       def silence_logging
-        loggers = [ ::Mongo::Logger.logger ]
-        loggers << ::Mongoid.logger if defined?(::Mongoid) && ::Mongoid.respond_to?(:logger)
-        silence_loggers(loggers.compact.uniq, 0) { yield }
+        silence_loggers([ ::Mongo::Logger.logger ].compact, 0) { yield }
       end
 
       def validate_transaction_support!(target = client)
@@ -288,9 +276,6 @@ module SolidQueue
 
         def build_client(source)
           candidate = source.respond_to?(:call) ? source.call : source
-          if !candidate && defined?(SolidQueue::MongoidIntegration)
-            candidate = SolidQueue::MongoidIntegration.client
-          end
 
           if candidate
             @owns_client = false
@@ -310,11 +295,7 @@ module SolidQueue
 
         def resolve_configured_client
           source = SolidQueue.respond_to?(:mongo_client) ? SolidQueue.mongo_client : nil
-          candidate = source.respond_to?(:call) ? source.call : source
-          if !candidate && defined?(SolidQueue::MongoidIntegration)
-            candidate = SolidQueue::MongoidIntegration.client
-          end
-          candidate
+          source.respond_to?(:call) ? source.call : source
         end
 
 

@@ -39,7 +39,7 @@ module SolidQueue
         filter[:_id] = { "$ne" => excluded_id } if excluded_id
 
         SolidQueue.instrument :prune_processes, size: 0 do |payload|
-          collection.find(filter, **SolidQueue::Mongo.session_options).sort(_id: 1).batch_size(50).each do |document|
+          collection.find(filter, hint: "process_heartbeat", **SolidQueue::Mongo.session_options).sort(_id: 1).batch_size(50).each do |document|
             process = from_document(document)
             payload[:size] += 1 if process.prune(cutoff: cutoff)
           end

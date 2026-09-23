@@ -31,7 +31,7 @@ module SolidQueue
 
   mattr_accessor :backend, default: :active_record
   mattr_accessor :mongo_url, default: ENV.fetch("MONGODB_URI", "mongodb://127.0.0.1:27017/solid_queue")
-  mattr_accessor :mongo_database, :mongo_client, :mongoid_client
+  mattr_accessor :mongo_database, :mongo_client
   mattr_accessor :mongo_transaction_timeout, default: 5.seconds
   mattr_accessor :mongo_command_monitoring, default: false
 

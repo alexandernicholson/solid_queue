@@ -3,6 +3,7 @@
 module ActiveJob
   module ConcurrencyControls
     extend ActiveSupport::Concern
+    include ArgumentIdentity
 
     DEFAULT_CONCURRENCY_GROUP = ->(*) { self.class.name }
     CONCURRENCY_ON_CONFLICT_BEHAVIOUR = %i[ block discard ]
@@ -30,13 +31,7 @@ module ActiveJob
       if self.class.concurrency_key
         param = compute_concurrency_parameter(self.class.concurrency_key)
 
-        identity = if active_record_model?(param) || global_id_model?(param)
-          [ param.class.name, param.id ]
-        else
-          [ param ]
-        end
-
-        [ concurrency_group, *identity ].compact.join("/")
+        [ concurrency_group, *argument_identity(param) ].compact.join("/")
       end
     end
 
@@ -47,14 +42,6 @@ module ActiveJob
     private
       def concurrency_group
         compute_concurrency_parameter(self.class.concurrency_group)
-      end
-
-      def active_record_model?(value)
-        defined?(::ActiveRecord::Base) && value.is_a?(::ActiveRecord::Base)
-      end
-
-      def global_id_model?(value)
-        defined?(::GlobalID::Identification) && value.is_a?(::GlobalID::Identification)
       end
 
       def compute_concurrency_parameter(option)

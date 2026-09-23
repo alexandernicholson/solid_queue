@@ -23,6 +23,7 @@ module SolidQueue
           transaction(operation: "release_blocked") do
             document = collection.find(
               { state: "blocked", concurrency_key: concurrency_key },
+              hint: "blocked_release_v2",
               **SolidQueue::Mongo.session_options
             ).sort(priority: 1, _id: 1).limit(1).first
             next false unless document
@@ -66,6 +67,7 @@ module SolidQueue
               { "$group" => { _id: "$concurrency_key" } },
               { "$limit" => limit }
             ],
+            hint: "blocked_maintenance_v2",
             **SolidQueue::Mongo.session_options
           ).map { |document| document["_id"] }.compact
           payload[:size] = release_many(keys)

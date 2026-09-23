@@ -31,7 +31,7 @@ module SolidQueue
 
         collection.update_many(
           { _id: { "$in" => ids }, state: { "$in" => [ nil, "scheduled", "failed" ] } },
-          { "$set" => { state: type.to_s }, "$unset" => { process_id: true, claim_token: true, claimed_at: true, error: true, finished_at: true } },
+          { "$set" => { state: type.to_s }, "$unset" => { process_id: true, claim_token: true, claimed_at: true, started_at: true, error: true, finished_at: true } },
           **SolidQueue::Mongo.session_options
         )
         Job.find_many(ids).select { |job| job.state == type.to_s }.map { |job| from_document(job.attributes) }
@@ -81,6 +81,7 @@ module SolidQueue
             end
             Job.delete_recurring_markers(discarded_jobs.map(&:bson_id))
             collection.delete_many(filter, **SolidQueue::Mongo.session_options)
+            Deduplication.release(discarded_jobs.select(&:deduplicated?), windowed: true)
           end
           discarded_jobs.each do |job|
             SolidQueue::Mongo.after_commit { job.unblock_next_blocked_job } if job.state == "ready" && job.concurrency_limited?

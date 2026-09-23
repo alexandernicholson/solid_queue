@@ -13,6 +13,7 @@ Solid Queue's default backend supports SQL databases such as MySQL, PostgreSQL, 
   - [Single database configuration](#single-database-configuration)
   - [Dashboard UI Setup](#dashboard-ui-setup)
   - [Experimental MongoDB backend](#experimental-mongodb-backend)
+    - [MongoDB job lifecycle](#mongodb-job-lifecycle)
   - [Incremental adoption](#incremental-adoption)
   - [High performance requirements](#high-performance-requirements)
 - [Workers, dispatchers, and scheduler](#workers-dispatchers-and-scheduler)
@@ -29,6 +30,7 @@ Solid Queue's default backend supports SQL databases such as MySQL, PostgreSQL, 
 - [Errors when enqueuing](#errors-when-enqueuing)
 - [Concurrency controls](#concurrency-controls)
   - [Performance considerations](#performance-considerations)
+- [Deduplication](#deduplication)
 - [Failed jobs and retries](#failed-jobs-and-retries)
   - [Error reporting on jobs](#error-reporting-on-jobs)
   - [Jobs interrupted by non-graceful process death](#jobs-interrupted-by-non-graceful-process-death)
@@ -206,9 +208,9 @@ Use an Active Job ID for `find_job` and single-job actions. `jobs` takes a `stat
 
 ### Experimental MongoDB backend
 
-Solid Queue includes an **experimental** native MongoDB backend. It uses the MongoDB Ruby Driver directly for queue persistence; Mongoid is optional and is only used to integrate application models. The existing Active Record backend remains the default and its installation and configuration are unchanged.
+Solid Queue includes an **experimental** native MongoDB backend. It uses the MongoDB Ruby Driver directly for queue persistence and doesn't use or integrate with Mongoid. The existing Active Record backend remains the default and its installation and configuration are unchanged.
 
-The MongoDB backend requires Ruby 3.2 or newer, Rails 7.1 or newer, MongoDB Ruby Driver `mongo >= 2.24, < 3`, and a transaction-capable MongoDB replica set or sharded cluster. A standalone `mongod` is rejected rather than run with weaker guarantees. Mongoid is optional.
+The MongoDB backend requires Ruby 3.2 or newer, Rails 7.1 or newer, MongoDB Ruby Driver `mongo >= 2.24, < 3`, and a transaction-capable MongoDB replica set or sharded cluster. A standalone `mongod` is rejected rather than run with weaker guarantees.
 
 For a new driver-only installation, select MongoDB when running the installer:
 
@@ -257,14 +259,7 @@ config.solid_queue.mongo_client = -> { MyMongoClients.queue }
 
 Solid Queue creates a separate driver client in every fork. Size the Mongo driver's `max_pool_size` **per process**: a thread or fiber worker needs a practical minimum of its configured execution capacity plus one polling and one heartbeat connection. Unlike the Rails 7.2+ SQL guidance [below](#threads-processes-and-signals), MongoDB fiber capacity is included in this estimate. In fork mode, apply it independently to each worker process; in async-supervisor mode, add the concurrent requirements of all actors sharing the process. Set the option on the Mongo URI or supplied client, not in `database.yml`. An externally supplied client must be suitable for that process; Solid Queue rebuilds a fork-safe child client from it after a fork. Do not share sessions across threads or fibers. Mongo session context is stored in `ActiveSupport::IsolatedExecutionState`; fiber workers require `config.active_support.isolation_level = :fiber` and the `async` gem as described [below](#threads-processes-and-signals).
 
-Mongoid is optional. To reuse a named Mongoid client for queue storage, load Mongoid and configure:
-
-```ruby
-config.solid_queue.backend = :mongodb
-config.solid_queue.mongoid_client = :queue
-```
-
-That client must point at the transaction-capable deployment used by the queue. When Mongoid is loaded, Solid Queue adds GlobalID identification to Mongoid documents; the MongoDB backend registers an Active Job serializer for `BSON::ObjectId`. Documents and nested ObjectIds can then be job arguments. Driver-only applications use the Ruby Driver without Mongoid.
+The MongoDB backend registers an Active Job serializer for `BSON::ObjectId`, so ObjectIds, including nested ones, can be job arguments.
 
 #### MongoDB transactions and delivery guarantees
 
@@ -295,11 +290,78 @@ MongoDB queue, job, process, and batch IDs exposed by Solid Queue are strings. I
 
 MongoDB's 16 MiB BSON document limit also bounds serialized jobs. Active Job payloads are persisted as JSON inside the BSON document, preserving integers larger than BSON int64 when Active Job can serialize them. Solid Queue rejects an enqueue before writing when the job document exceeds 16 MiB minus a 128 KiB lifecycle reserve, raising `SolidQueue::Job::EnqueueError`. Constrained and batched enqueue transactions roll back atomically on this rejection. Failure metadata uses a 64 KiB envelope (exception class 1 KiB, message 16 KiB, and at most 64 backtrace lines of 512 bytes) to leave room for a job to transition to failed.
 
-Majority durability protects committed queue state; it does not make execution side effects exactly once. Solid Queue provides at-least-once processing across failures and retries, so jobs that affect external systems must be idempotent or provide their own deduplication.
+Majority durability protects committed queue state; it does not make execution side effects exactly once. Without deduplication, Solid Queue provides at-least-once processing across failures and retries, so jobs that affect external systems must be idempotent. [Deduplication](#deduplication) gives at most one execution per attempt and one live job per key.
+
+#### MongoDB job lifecycle
+
+Each job attempt is one document in `solid_queue_jobs`, and its `state` field moves through the states below. Enqueueing runs in your application; the dispatcher polls scheduled jobs and runs concurrency maintenance; workers claim and perform ready jobs; the supervisor fails claims whose process died.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    state "Enqueue transaction" as Enqueue
+    state "Rejected (EnqueueError, rolled back)" as Rejected
+    state "Duplicate (DuplicateError, nothing written)" as Duplicate
+    state "Discarded (document deleted)" as Discarded
+    state "Deleted by retention" as Cleared
+    state due <<choice>>
+    state slot <<choice>>
+    state conflict <<choice>>
+
+    [*] --> Enqueue : perform_later / perform_all_later
+    Enqueue --> Duplicate : deduplication key already held
+    Enqueue --> Rejected : BSON size over 16 MiB minus 128 KiB
+    Enqueue --> due : insert job, batch markers, semaphore wait
+    due --> Scheduled : scheduled_at in the future
+    due --> slot : due now
+
+    Scheduled --> slot : dispatcher poll, scheduled_at reached
+
+    slot --> Ready : no concurrency limit, or Semaphore.wait took a slot
+    slot --> conflict : concurrency limit reached
+    conflict --> Blocked : on_conflict block, expires_at set
+    conflict --> Discarded : on_conflict discard
+
+    Blocked --> Ready : slot released by a finishing job, or maintenance unblock after expires_at
+
+    Ready --> Claimed : worker poll, find candidates then update_many then read back by claim_token
+
+    Claimed --> Finished : perform succeeded
+    Claimed --> Failed : perform raised
+    Claimed --> Failed : owner pruned, orphaned, or fork died
+    Claimed --> Ready : graceful shutdown releases a claim that hasn't started
+
+    Failed --> slot : manual retry via Admin
+    Ready --> Discarded : Admin discard
+    Scheduled --> Discarded : Admin discard
+    Blocked --> Discarded : Admin discard
+    Failed --> Discarded : Admin discard
+
+    Finished --> Cleared : clear_finished_jobs_after, or at once if preserve_finished_jobs is false
+
+    Duplicate --> [*]
+    Rejected --> [*]
+    Discarded --> [*]
+    Cleared --> [*]
+
+    note right of Claimed
+        Finalize matches process_id, claim_token and claim_generation,
+        so a stale owner cannot finish a newer claim.
+        A deduplicated job records started_at before perform;
+        a started claim is never released to run again.
+        After commit, Semaphore.signal promotes the next Blocked job
+        and the batch attempt marker is removed.
+        Active Job retry_on finishes this attempt and enqueues
+        a new document with the same active_job_id.
+    end note
+```
+
+A claimed job can't be discarded. Automatic Active Job retries create a new attempt document with the same `active_job_id`, so batch counts and deduplication treat them as one logical job.
 
 #### MongoDB logging, health, and notifications
 
-`config.solid_queue.silence_polling` defaults to `true` and suppresses polling output from both the Mongo driver and Mongoid loggers. Low-volume driver health notifications are enabled by default:
+`config.solid_queue.silence_polling` defaults to `true` and suppresses polling output from the Mongo driver logger. Low-volume driver health notifications are enabled by default:
 
 - `mongo_primary_change.solid_queue`
 - `mongo_server_unavailable.solid_queue`
@@ -318,7 +380,7 @@ It emits `mongo_command.solid_queue`. All of these events are handled by Solid Q
 
 #### MongoDB verification and benchmarks
 
-The repository includes native MongoDB tests (`test/mongodb`), optional Mongoid tests (`test/mongoid`), a Docker runner (`test/mongodb/run_matrix.rb`), and a persistence benchmark (`benchmarks/run`). CI and the runner test two lanes: pinned (Ruby 4.0.2, Rails 8.0.5.1, `mongo` 2.26.0, Mongoid 7.6.1, MongoDB 8.0) and latest (Ruby 4.0.7, Rails 8.1.3.1, `mongo` 2.26.0, Mongoid 9.1.1, MongoDB 8.3). The released Mongoid 7.6.1 gem requires Active Model below 7.1, so the pinned lane installs Mongoid from a 7.6.1 source that supports Rails 8.0: the workflow sets it, and the runner reads it from `MONGOID_GIT` and `MONGOID_REF`. The fault tests require a dedicated replica set with test commands enabled. The benchmark records its environment and comparison under `tmp/benchmarks`; measure your production topology separately.
+The repository includes MongoDB tests (`test/mongodb`), a Docker runner (`test/mongodb/run_matrix.rb`), and a persistence benchmark (`benchmarks/run`). CI and the runner test two lanes: pinned (Ruby 4.0.2, Rails 8.0.5.1, `mongo` 2.26.0, MongoDB 8.0) and latest (Ruby 4.0.7, Rails 8.1.3.1, `mongo` 2.26.0, MongoDB 8.3). The fault tests require a dedicated replica set with test commands enabled. The benchmark records its environment and comparison under `tmp/benchmarks`; measure your production topology separately.
 
 ### Incremental adoption
 
@@ -562,7 +624,7 @@ In a similar way, if a worker is terminated in any other way not initiated by th
 
 ### Database configuration
 
-For the **Active Record backend**, configure the database via `config.solid_queue.connects_to` in `config/application.rb` or an environment config. By default, a single database called `queue` is used for writing and reading to match the SQL installation configuration. All Active Record multiple-database options are available here. For native MongoDB, use `mongo_url`, `mongo_database`, `mongo_client`, or `mongoid_client` [instead](#experimental-mongodb-backend); `connects_to` and `database.yml` do not select Mongo queue storage.
+For the **Active Record backend**, configure the database via `config.solid_queue.connects_to` in `config/application.rb` or an environment config. By default, a single database called `queue` is used for writing and reading to match the SQL installation configuration. All Active Record multiple-database options are available here. For native MongoDB, use `mongo_url`, `mongo_database`, or `mongo_client` [instead](#experimental-mongodb-backend); `connects_to` and `database.yml` do not select Mongo queue storage.
 
 If you use MySQL or MariaDB, consider running the queue database with the `READ COMMITTED` transaction isolation level. Under the default `REPEATABLE READ`, InnoDB takes gap locks on the indexes Solid Queue polls, which under heavy load can occasionally deadlock jobs being enqueued against jobs being claimed or dispatched. `READ COMMITTED` avoids these gap locks and is perfectly safe for Solid Queue's own tables, and it's how we run it ourselves. You can set it per connection in your `database.yml`:
 
@@ -594,7 +656,7 @@ There are several settings that control how Solid Queue works that you can set a
 - `process_alive_threshold`: how long to wait until a process is considered dead after its last heartbeat—defaults to 5 minutes.
 - `fork_boot_timeout`: how long a forked process can take to finish booting before the supervisor replaces it—defaults to 5 minutes. It only applies in the default `fork` mode.
 - `shutdown_timeout`: time the supervisor will wait since it sent the `TERM` signal to its supervised processes before sending a `QUIT` version to them requesting immediate termination—defaults to 5 seconds.
-- `silence_polling`: whether to silence persistence logs emitted when polling for workers and dispatchers—defaults to `true`. This covers Active Record and, on the MongoDB backend, both the Ruby Driver and Mongoid loggers. On Rails 8.2 and later, SQL users can go further and disable SQL notifications for the whole queue database connection by setting `sql_notifications: false` in `database.yml`. This silences not only polling but also heartbeats, semaphores, maintenance queries, and everything else Solid Queue does on that SQL connection, both in logs and for `sql.active_record` subscribers.
+- `silence_polling`: whether to silence persistence logs emitted when polling for workers and dispatchers—defaults to `true`. This covers Active Record and, on the MongoDB backend, the Ruby Driver logger. On Rails 8.2 and later, SQL users can go further and disable SQL notifications for the whole queue database connection by setting `sql_notifications: false` in `database.yml`. This silences not only polling but also heartbeats, semaphores, maintenance queries, and everything else Solid Queue does on that SQL connection, both in logs and for `sql.active_record` subscribers.
 - `supervisor_pidfile`: path to a pidfile that the supervisor will create when booting to prevent running more than one supervisor in the same host, or in case you want to use it for a health check. It's `nil` by default.
 - `preserve_finished_jobs`: whether to keep finished jobs (SQL rows or MongoDB documents)—defaults to `true`. On MongoDB, removing a finished recurring job also removes its deduplication marker; retain jobs for the period in which duplicate runs must be prevented.
 - `clear_finished_jobs_after`: period to keep finished jobs when preservation is enabled—defaults to 1 day. The installer configures [a recurring cleanup job](#recurring-tasks) to clear finished jobs every hour on the 12th minute in batches. Adjust `recurring.yml` to change this; failed jobs are not cleared by this cleanup.
@@ -683,7 +745,7 @@ class MyJob < ApplicationJob
 
   # ...
 ```
-- `key` is the only required parameter; it can be a symbol, string, or proc receiving the job arguments. If the proc returns an Active Record record, the key is built from its class name and `id`; Mongoid documents can be job arguments when [Mongoid integration](#experimental-mongodb-backend) is loaded. A stable scalar key such as an account ID works on either backend.
+- `key` is the only required parameter; it can be a symbol, string, or proc receiving the job arguments. If the proc returns an Active Record record, the key is built from its class name and `id`. A stable scalar key such as an account ID works on either backend.
 - `to` is `1` by default.
 - `duration` is set to `SolidQueue.default_concurrency_control_period` by default, which itself defaults to `3 minutes`, but that you can configure as well.
 - `group` is used to control the concurrency of different job classes together. It defaults to the job class name.
@@ -792,6 +854,31 @@ Or something similar to that depending on your setup. You can also assign a diff
 In addition, mixing concurrency controls with **bulk enqueuing** (Active Job's `perform_all_later`) has no benefit because concurrency-controlled jobs need to be enqueued one by one to ensure concurrency limits are respected, so you lose all the benefits of bulk enqueuing.
 
 When jobs that have concurrency controls and `on_conflict: :discard` are enqueued in bulk, the ones that fail to be enqueued and are discarded would have `successfully_enqueued` set to `false`. The total count of jobs enqueued returned by `perform_all_later` will exclude these jobs as expected.
+
+## Deduplication
+
+Declare a deduplication key to keep at most one live job per key. It works on both the Active Record and MongoDB backends:
+
+```ruby
+class SyncAccountJob < ApplicationJob
+  deduplicates key: ->(account) { account }
+end
+
+class DigestJob < ApplicationJob
+  deduplicates key: ->(account) { account }, duration: 15.minutes
+end
+```
+
+The key is built like a concurrency key: the job class name plus the value the proc returns, with Active Record records identified by class and id.
+
+- The key is reserved in the enqueue transaction against a unique index, so concurrent enqueues of one key persist exactly one job. A rejected duplicate writes nothing: it takes no concurrency slot, doesn't join a batch, and `perform_later` returns `false` with `enqueue_error` set to `SolidQueue::Job::DuplicateError`. `perform_all_later` marks each duplicate the same way. Each rejection emits `enqueue_duplicate.solid_queue` with `deduplication_key`, `active_job_id`, and the `job_id` holding the key.
+- Without `duration`, the key is held while any attempt of the job is scheduled, ready, blocked, claimed, or failed. It frees when the job finishes or is discarded. Automatic retries keep it; a failed job keeps it until it's retried to completion or discarded.
+- With `duration`, the key is held for that window from the first enqueue, even after the job finishes. A job discarded by its concurrency limit, or by an operator, frees it at once.
+- Before `perform` runs, a deduplicated claim records `started_at`, guarded by its claim. A graceful shutdown releases only claims that haven't started; a started claim whose process dies is failed, not run again. A claim that was released or taken over before it started doesn't run.
+
+Together these give at most one execution of each deduplicated attempt and one live job per key. They don't make external side effects exactly once: if a process dies part-way through `perform`, the attempt is failed and its effects may be partial. Retrying it is an explicit operator decision.
+
+Existing Active Record installations need the `add_deduplication_to_solid_queue` migration; see [Upgrading](UPGRADING.md). MongoDB installations need `bin/rails solid_queue:prepare` to create the deduplication collection and indexes.
 
 ## Failed jobs and retries
 

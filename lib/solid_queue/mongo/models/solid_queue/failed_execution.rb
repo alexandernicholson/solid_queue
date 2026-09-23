@@ -61,7 +61,7 @@ module SolidQueue
             { _id: bson_id, state: "failed" },
             {
               "$set" => { arguments: ActiveSupport::JSON.encode(payload) },
-              "$unset" => { state: true, error: true, finished_at: true, process_id: true, claim_token: true, claimed_at: true }
+              "$unset" => { state: true, error: true, finished_at: true, process_id: true, claim_token: true, claimed_at: true, started_at: true }
             },
             **SolidQueue::Mongo.session_options
           )

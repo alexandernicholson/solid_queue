@@ -6,11 +6,10 @@ require "pathname"
 ROOT = Pathname(__dir__).join("../..").expand_path.freeze
 LANES = {
   "pinned" => {
-    ruby: "4.0.2", rails: "8.0.5.1", driver: "2.26.0", mongoid: "7.6.1", mongodb: "8.0",
-    mongoid_git: ENV["MONGOID_GIT"], mongoid_ref: ENV["MONGOID_REF"]
+    ruby: "4.0.2", rails: "8.0.5.1", driver: "2.26.0", mongodb: "8.0"
   },
   "latest" => {
-    ruby: "4.0.7", rails: "8.1.3.1", driver: "2.26.0", mongoid: "9.1.1", mongodb: "8.3"
+    ruby: "4.0.7", rails: "8.1.3.1", driver: "2.26.0", mongodb: "8.3"
   }
 }.freeze
 SELECTED_LANES = ENV.fetch("LANES", LANES.keys.join(",")).split(",").freeze
@@ -18,10 +17,6 @@ FAULT_APP_NAME = "solid-queue-fault-tests"
 NATIVE_TEST_COMMAND = [
   "bundle", "exec", "ruby", "-Itest", "-e",
   'Dir["test/mongodb/**/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
-].freeze
-MONGOID_TEST_COMMAND = [
-  "bundle", "exec", "ruby", "-Itest", "-e",
-  'Dir["test/mongoid/**/*_test.rb"].sort_by { |file| [ File.basename(file) == "arguments_test.rb" ? 1 : 0, file ] }.each { |file| require File.expand_path(file) }'
 ].freeze
 
 def run!(*command, **options)
@@ -91,19 +86,12 @@ end
 failures = []
 SELECTED_LANES.each do |name|
   lane = LANES.fetch(name) { abort "Unknown lane #{name.inspect}; choose from #{LANES.keys.join(", ")}" }
-  if name == "pinned" && lane[:mongoid_git].to_s.empty?
-    abort "Set MONGOID_GIT and MONGOID_REF to a Mongoid #{lane[:mongoid]} source that supports Rails #{lane[:rails]}"
-  end
-
   image = "solid-queue-mongodb:#{name}"
   build = [
     "docker", "build", "--file", ROOT.join("test/mongodb/Dockerfile").to_s,
     "--build-arg", "RUBY_VERSION=#{lane[:ruby]}",
     "--build-arg", "RAILS_VERSION=#{lane[:rails]}",
     "--build-arg", "MONGO_DRIVER_VERSION=#{lane[:driver]}",
-    "--build-arg", "MONGOID_VERSION=#{lane[:mongoid]}",
-    "--build-arg", "MONGOID_GIT=#{lane[:mongoid_git]}",
-    "--build-arg", "MONGOID_REF=#{lane[:mongoid_ref]}",
     "--tag", image,
     ROOT.to_s
   ]
@@ -114,9 +102,7 @@ SELECTED_LANES.each do |name|
   end
 
   container = start_mongodb(name, lane[:mongodb])
-  { native: NATIVE_TEST_COMMAND, mongoid: MONGOID_TEST_COMMAND }.each do |suite, command|
-    failures << "#{name}: #{suite} (#{$?.exitstatus})" unless run_suite(container, image, "solid_queue_#{name}_#{suite}_test", command)
-  end
+  failures << "#{name}: native (#{$?.exitstatus})" unless run_suite(container, image, "solid_queue_#{name}_test", NATIVE_TEST_COMMAND)
 end
 
 abort "Matrix failures:\n#{failures.join("\n")}" if failures.any?
