@@ -17,7 +17,7 @@ module SolidQueue
 
         now = Time.current
         collection.delete_one({ key: key, expires_at: { "$lte" => now } }, **SolidQueue::Mongo.session_options)
-        return true if create_unique_by(key: key, active_job_id: job.active_job_id, job_id: job.bson_id, expires_at: active_job.deduplication_duration&.from_now, created_at: now)
+        return true if create_unique_by(key: key, active_job_id: job.active_job_id, job_id: job.bson_id, expires_at: active_job.deduplication_duration&.then { |duration| now + duration }, created_at: now)
 
         holder = collection.find({ key: key }, **SolidQueue::Mongo.session_options).projection(active_job_id: 1, job_id: 1).first
         return true if holder && holder["active_job_id"] == job.active_job_id

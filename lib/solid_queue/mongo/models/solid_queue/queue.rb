@@ -39,7 +39,10 @@ module SolidQueue
     end
 
     def latency
-      @latency ||= ((Time.current - (metrics[:oldest_created_at] || Time.current)).to_i)
+      @latency ||= begin
+        now = Time.current
+        (now - (metrics[:oldest_created_at] || now)).to_i
+      end
     end
 
     def human_latency

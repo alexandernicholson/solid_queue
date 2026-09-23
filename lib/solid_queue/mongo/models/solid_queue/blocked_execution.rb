@@ -8,9 +8,10 @@ module SolidQueue
     class << self
       def block(job)
         duration = job.job_class ? job.concurrency_duration : SolidQueue.default_concurrency_control_period
+        now = Time.current
         document = collection.find_one_and_update(
           { _id: job.bson_id, state: { "$in" => [ nil, "scheduled" ] } },
-          { "$set" => { state: "blocked", expires_at: duration.from_now, updated_at: Time.current },
+          { "$set" => { state: "blocked", expires_at: now + duration, updated_at: now },
             "$unset" => { process_id: "", claim_token: "" } },
           return_document: :after,
           **SolidQueue::Mongo.session_options

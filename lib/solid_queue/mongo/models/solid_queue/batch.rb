@@ -341,9 +341,10 @@ module SolidQueue
       end
 
       def mark_as_enqueued
+        now = Time.current
         self.class.collection.update_one(
           { _id: bson_id, enqueued_at: nil, finished_at: nil },
-          { "$set" => { enqueued_at: Time.current, updated_at: Time.current }, "$inc" => { version: 1 } },
+          { "$set" => { enqueued_at: now, updated_at: now }, "$inc" => { version: 1 } },
           **SolidQueue::Mongo.session_options
         )
       end
@@ -359,8 +360,9 @@ module SolidQueue
             **SolidQueue::Mongo.session_options
           ).size
           completed = total_jobs.to_i - failures
-          fields = { failed_jobs: failures, completed_jobs: completed, updated_at: Time.current }
-          fields[:failed_at] = Time.current if failures.positive?
+          now = Time.current
+          fields = { failed_jobs: failures, completed_jobs: completed, updated_at: now }
+          fields[:failed_at] = now if failures.positive?
           self.class.collection.update_one({ _id: bson_id }, { "$set" => fields }, **SolidQueue::Mongo.session_options)
           fields.each { |name, value| public_send("#{name}=", value) }
           enqueue_callback_jobs

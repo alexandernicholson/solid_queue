@@ -50,9 +50,10 @@ module SolidQueue
       def enqueue(active_job, scheduled_at: Time.current)
         active_job.scheduled_at = scheduled_at
 
-        attributes = attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: Time.current)
+        now = Time.current
+        attributes = attributes_from_active_job(active_job).merge(_id: BSON::ObjectId.new, created_at: now)
         job = if attributes[:concurrency_key].blank? && attributes[:batch_id].nil? && attributes[:deduplication_key].nil?
-          attributes[:state] = scheduled_at > Time.current ? "scheduled" : "ready"
+          attributes[:state] = scheduled_at > now ? "scheduled" : "ready"
           ensure_enqueue_document_size!(attributes)
           create!(attributes)
         else
@@ -71,7 +72,7 @@ module SolidQueue
               next created
             else
               created.state = "blocked"
-              created.expires_at = created.concurrency_duration.from_now
+              created.expires_at = now + created.concurrency_duration
             end
             pending_document = attributes.merge(state: created.state)
             pending_document[:expires_at] = created.expires_at if created.expires_at
