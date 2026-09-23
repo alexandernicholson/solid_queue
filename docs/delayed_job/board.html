@@ -324,22 +324,22 @@ flowchart LR
   const ITEMS = [
     { rank: "1", title: "obj.delay, send_later, send_at, handle_asynchronously", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
     { rank: "2", title: "Default retries: 25 attempts, attempts**4 + 5, reschedule_at", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
-    { rank: "3", title: "max_run_time watchdog", track: "both", owner: "core-exec · shim-enqueue", status: "review", note: "Core on main: Timeout per thread or fiber + indexed timeout_at sweep" },
-    { rank: "4", title: "work_off(n) → [successes, failures]", track: "both", owner: "core-worker · shim-enqueue", status: "review", note: "Core on main: SolidQueue.work_off" },
+    { rank: "3", title: "max_run_time watchdog", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: Timeout per thread or fiber, timeout_at sweep, WorkerTimeout, exactly_once_timeout cap" },
+    { rank: "4", title: "work_off(n) → [successes, failures]", track: "both", owner: "core-worker · shim-enqueue", status: "done", note: "Core + shim merged: SolidQueue.work_off, Delayed::Worker#work_off" },
     { rank: "5", title: "Delayed::Worker.delay_jobs (bool or proc)", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
-    { rank: "6", title: "Re-run claims failed by process death", track: "both", owner: "core-exec · shim-enqueue", status: "review", note: "Core on main: retry_on_process_death, capped by executions" },
+    { rank: "6", title: "Re-run claims failed by process death", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: retry_on_process_death, per-job retries_on_process_death from max_attempts" },
     { rank: "7", title: "destroy_failed_jobs", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
-    { rank: "8", title: "Drain mode: jobs:workoff, --exit-on-complete", track: "both", owner: "core-worker · shim-ops", status: "review", note: "Core on main: exit_on_complete, bin/jobs --exit-on-complete" },
-    { rank: "9", title: "--min-priority / --max-priority", track: "both", owner: "core-worker · shim-ops", status: "review", note: "Core on main: priority ranges on both claim paths, index-bound" },
+    { rank: "8", title: "Drain mode: jobs:workoff, --exit-on-complete", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core + shim merged: exit_on_complete, jobs:workoff, --exit-on-complete" },
+    { rank: "9", title: "--min-priority / --max-priority", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core + shim merged: index-bound priority ranges, --min-priority / --max-priority" },
     { rank: "10", title: "Procs for priority, queue, run_at", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
-    { rank: "11", title: "Delayed::Plugin and Lifecycle events", track: "both", owner: "core-exec · shim-enqueue", status: "review", note: "Core on main: around_perform, around_claim, around_poll, on_failure" },
+    { rank: "11", title: "Delayed::Plugin and Lifecycle events", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: around_perform, around_claim, around_poll, on_failure drive Delayed::Lifecycle" },
     { rank: "12", title: "Mongoid documents as arguments", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
     { rank: "13", title: "jobs:check[max_age]", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core and shim merged" },
     { rank: "14", title: "jobs:clear", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core and shim merged" },
     { rank: "15", title: "queue_attributes (priority per queue)", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
     { rank: "16", title: "default_priority, default_queue_name", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
     { rank: "17", title: "script/delayed_job start · stop · restart · status · run", track: "shim", owner: "shim-ops", status: "done", note: "Merged; all flags and six commands, tested against a real daemon" },
-    { rank: "18", title: "display_name in logs and Admin", track: "both", owner: "core-exec · shim-enqueue", status: "review", note: "Core on main: failure, release, timeout events and Admin" },
+    { rank: "18", title: "display_name in logs and Admin", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: display_name in events, logs and Admin" },
     { rank: "★", title: "Delivery modes: at_least_once · at_most_once · exactly_once", track: "both", owner: "core-once · shim-enqueue", status: "done", note: "Merged: delivers :mode, stored at enqueue, exactly_once_timeout 50s, crash-loop cap, per-job death retries, nestable attempts" },
     { rank: "A", title: "Delayed::Job facade on both backends", track: "shim", owner: "shim-ops", status: "done", note: "Merged; slot handling covered for ready, claimed, blocked, failed jobs" },
     { rank: "B", title: "Delayed::Worker settings and constants", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
@@ -349,7 +349,7 @@ flowchart LR
     { rank: "·", title: "Plan and docs", track: "both", owner: "lead", status: "done" },
     { rank: "·", title: "Fork, empty branch, scaffold booting on both backends", track: "shim", owner: "lead", status: "done" },
     { rank: "·", title: "Docker test harness (SQL, MongoDB RS, shim)", track: "both", owner: "lead", status: "done" },
-    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "building", note: "Shim integrated: 649 runs, 0 failures on all 4 lanes; CI green. Waiting on core-once to un-skip 4" }
+    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "done", note: "Merged: shim 655 runs, 0 failures on all 4 lanes; Solid Queue and shim CI green" }
   ];
 
   const AGENTS = [
