@@ -58,6 +58,23 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
     warn formatted_event(event, action: "Fail job that exceeded its run time", **attributes)
   end
 
+  def work_off(event)
+    attributes = event.payload.slice(:queues, :limit, :priority, :successes, :failures)
+    attributes[:priority] = attributes[:priority]&.to_s
+
+    info formatted_event(event, action: "Work off jobs", **attributes)
+  end
+
+  def drained(event)
+    attributes = event.payload.slice(:process_id, :name, :queues).merge(priority_range: event.payload[:priority_range]&.to_s).compact
+
+    info formatted_event(event, action: "Worker drained", **attributes)
+  end
+
+  def check_latency(event)
+    info formatted_event(event, action: "Check queue latency", **event.payload.slice(:max_age, :count, :latency))
+  end
+
   def death_recovery(event)
     attributes = event.payload.slice(:job_ids, :retried, :exhausted)
     attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]

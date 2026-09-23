@@ -91,6 +91,27 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_match_logged :info, "Retry jobs failed by process death", "job_ids: [1, 2, 3], retried: [1, 2], exhausted: [3], error: \"SolidQueue::Processes::ProcessMissingError The process that was running this job no longer exists\""
   end
 
+  test "work off" do
+    attach_log_subscriber
+    instrument "work_off.solid_queue", queues: [ "*" ], limit: 100, priority: 0..10, successes: 3, failures: 1
+
+    assert_match_logged :info, "Work off jobs", "queues: [\"*\"], limit: 100, priority: \"0..10\", successes: 3, failures: 1"
+  end
+
+  test "drained" do
+    attach_log_subscriber
+    instrument "drained.solid_queue", process_id: 7, name: "worker-1", queues: [ "a", "b" ], priority_range: 1..5
+
+    assert_match_logged :info, "Worker drained", "process_id: 7, name: \"worker-1\", queues: [\"a\", \"b\"], priority_range: \"1..5\""
+  end
+
+  test "check latency" do
+    attach_log_subscriber
+    instrument "check_latency.solid_queue", max_age: 300, count: 2, latency: 451
+
+    assert_match_logged :info, "Check queue latency", "max_age: 300, count: 2, latency: 451"
+  end
+
   test "fail claimed jobs includes display names" do
     attach_log_subscriber
     instrument "fail_many_claimed.solid_queue", job_ids: [ 42 ], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, error: RuntimeError.new("gone")
