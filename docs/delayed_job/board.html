@@ -349,7 +349,7 @@ flowchart LR
     { rank: "·", title: "Plan and docs", track: "both", owner: "lead", status: "done" },
     { rank: "·", title: "Fork, empty branch, scaffold booting on both backends", track: "shim", owner: "lead", status: "done" },
     { rank: "·", title: "Docker test harness (SQL, MongoDB RS, shim)", track: "both", owner: "lead", status: "done" },
-    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead", status: "building", note: "Core merged and pushed: SQL 484, MongoDB 174, RuboCop clean" }
+    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "building", note: "Core merged. Shim halves merged on integrate/shim; fixing 64 integration failures" }
   ];
 
   const AGENTS = [
