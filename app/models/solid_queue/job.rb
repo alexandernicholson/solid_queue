@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_job/enqueuing"
+
 module SolidQueue
   class Job < Record
     class EnqueueError < StandardError; end
