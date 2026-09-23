@@ -26,6 +26,14 @@ module SolidQueue
         end
       end
 
+      def due_count_across(queue_list, priority: nil)
+        QueueSelector.new(queue_list, self).scoped_queues.sum do |queue_name|
+          filter = { state: "scheduled", scheduled_at: { "$lte" => Time.current } }
+          filter[:queue_name] = queue_name if queue_name
+          collection.count_documents(prioritized_within(filter, priority), **SolidQueue::Mongo.session_options)
+        end
+      end
+
       def any?
         count.positive?
       end

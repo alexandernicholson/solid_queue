@@ -1,0 +1,464 @@
+<title>Solid Queue Shim Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #f3f5f8;
+    --surface: #ffffff;
+    --sunken: #e9edf3;
+    --ink: #151a24;
+    --muted: #5a6475;
+    --line: #d9dee7;
+    --core: #3a48a8;
+    --core-soft: #e4e7f7;
+    --shim: #0a7568;
+    --shim-soft: #dcf1ee;
+    --done: #2f7a3b;
+    --building: #b06d00;
+    --review: #6b4bb3;
+    --planned: #7a8395;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground: #0e1219;
+      --surface: #161b25;
+      --sunken: #1d2330;
+      --ink: #e6e9ef;
+      --muted: #9aa3b3;
+      --line: #2a3140;
+      --core: #9aa5f2;
+      --core-soft: #252b4d;
+      --shim: #52c7b6;
+      --shim-soft: #123a36;
+      --done: #6cc47a;
+      --building: #e8a94a;
+      --review: #b49af0;
+      --planned: #8b93a4;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #0e1219;
+    --surface: #161b25;
+    --sunken: #1d2330;
+    --ink: #e6e9ef;
+    --muted: #9aa3b3;
+    --line: #2a3140;
+    --core: #9aa5f2;
+    --core-soft: #252b4d;
+    --shim: #52c7b6;
+    --shim-soft: #123a36;
+    --done: #6cc47a;
+    --building: #e8a94a;
+    --review: #b49af0;
+    --planned: #8b93a4;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.55 var(--body);
+    padding-inline: 20px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-block: 36px 64px; display: grid; gap: 44px; }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.005em; }
+  h1 { font-size: clamp(30px, 4.6vw, 44px); font-weight: 700; line-height: 1.05; }
+  h2 { font-size: 24px; font-weight: 600; }
+  h3 { font-size: 17px; font-weight: 600; }
+  p { margin: 0; max-width: 68ch; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+  header { display: grid; gap: 14px; }
+  .lede { font-size: 17px; color: var(--ink); }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 13px; }
+  .meta a { color: inherit; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: 500 12px/1 var(--mono); padding: 5px 9px; border-radius: 999px;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .chip.core { background: var(--core-soft); color: var(--core); }
+  .chip.shim { background: var(--shim-soft); color: var(--shim); }
+  .chip.both { background: linear-gradient(90deg, var(--core-soft) 50%, var(--shim-soft) 50%); color: var(--ink); }
+
+  .principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .principle { border-top: 2px solid var(--ink); padding-top: 10px; display: grid; gap: 4px; }
+  .principle b { font-family: var(--display); font-size: 16px; }
+  .principle span { color: var(--muted); font-size: 14px; }
+
+  section { display: grid; gap: 16px; }
+  .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toolbar button {
+    font: 500 13px/1 var(--body); color: var(--muted); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 11px; cursor: pointer;
+  }
+  .toolbar button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); background: var(--surface); }
+  .toolbar button:focus-visible, .card:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+
+  .progress { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--sunken); }
+  .progress i { display: block; height: 100%; }
+  .progress-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .progress-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+
+  .board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .column { background: var(--sunken); border-radius: 10px; padding: 10px; display: grid; gap: 8px; }
+  .column-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 4px; }
+  .column-head h3 { font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+  .column-head h3::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+  .count { font: 500 12px/1 var(--mono); color: var(--muted); }
+  .cards { display: grid; gap: 8px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 11px; display: grid; gap: 7px;
+  }
+  .card-top { display: flex; align-items: flex-start; gap: 8px; }
+  .rank {
+    flex: none; font: 600 12px/1 var(--mono); color: var(--muted);
+    min-width: 26px; padding-top: 3px; font-variant-numeric: tabular-nums;
+  }
+  .card-title { font-weight: 600; font-size: 14px; line-height: 1.35; }
+  .card-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .owner { font: 400 12px/1.3 var(--mono); color: var(--muted); }
+  .note { font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .empty { font-size: 13px; color: var(--muted); padding: 6px 4px; }
+
+  .diagrams { display: grid; gap: 28px; }
+  .diagram { display: grid; gap: 10px; }
+  .diagram-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
+  .diagram p { color: var(--muted); font-size: 14px; }
+  .figure {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px; overflow-x: auto;
+  }
+  .figure pre.mermaid { margin: 0; background: transparent; min-width: 560px; }
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 28px; }
+
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .agent { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 12px; display: grid; gap: 8px; align-content: start; }
+  .agent h3 { font-family: var(--mono); font-size: 14px; font-weight: 500; }
+  .agent ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; display: grid; gap: 2px; }
+
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+
+  @media (max-width: 880px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 540px) { .board { grid-template-columns: 1fr; } body { padding-inline: 16px; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">delayed_job 4.2 → Solid Queue · SQL + MongoDB</div>
+    <h1>Solid Queue Shim Board</h1>
+    <p class="lede">Apps keep every <code>Delayed::*</code> call. A <code>delayed_job</code> shim gem translates them to Active Job; Solid Queue gains the runtime features they need, on both backends, proven by shared suites.</p>
+    <div class="meta">
+      <span>Core: <a href="https://github.com/alexandernicholson/solid_queue">alexandernicholson/solid_queue</a> · <code>main</code></span>
+      <span>Shim: <a href="https://github.com/alexandernicholson/delayed_job/tree/solid-queue-shim">alexandernicholson/delayed_job</a> · <code>solid-queue-shim</code></span>
+      <span id="updated"></span>
+    </div>
+    <div class="legend">
+      <span class="chip core">Core · Solid Queue</span>
+      <span class="chip shim">Shim · delayed_job gem</span>
+      <span class="chip both">Both</span>
+    </div>
+  </header>
+
+  <div class="principles">
+    <div class="principle"><b>Stability</b><span>Ownership-guarded state changes, transactions, one behaviour suite for both backends.</span></div>
+    <div class="principle"><b>Performance</b><span>Every new query is index-bound; MongoDB queries carry index hints.</span></div>
+    <div class="principle"><b>Observability</b><span>Each new behaviour emits a <code>*.solid_queue</code> or <code>*.delayed_job</code> event with a log line.</span></div>
+  </div>
+
+  <section id="board" aria-labelledby="board-title">
+    <div class="section-head">
+      <h2 id="board-title">Board</h2>
+      <div class="toolbar" role="group" aria-label="Filter by track">
+        <button type="button" id="filter-all" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" id="filter-core" data-filter="core" aria-pressed="false">Core</button>
+        <button type="button" id="filter-shim" data-filter="shim" aria-pressed="false">Shim</button>
+      </div>
+    </div>
+    <div class="progress" id="progress" aria-hidden="true"></div>
+    <div class="progress-legend" id="progress-legend"></div>
+    <div class="board" id="columns"></div>
+  </section>
+
+  <section id="design" aria-labelledby="design-title">
+    <div class="section-head"><h2 id="design-title">How it fits</h2></div>
+    <div class="diagrams">
+      <div class="diagram">
+        <div class="diagram-head"><h3>Architecture</h3><span class="chip both">Both</span></div>
+        <p>One Active Job class, <code>Delayed::JobWrapper</code>, carries every delayed_job payload into Solid Queue.</p>
+        <div class="figure"><pre class="mermaid">
+flowchart LR
+  App["App code<br/>obj.delay · handle_asynchronously<br/>Delayed::Job.enqueue · Delayed::Worker"] --> Shim
+  subgraph Shim["delayed_job shim"]
+    Proxy["DelayProxy · PerformableMethod"] --> Wrapper["Delayed::JobWrapper"]
+    Custom["Custom job objects + hooks"] --> Wrapper
+    Settings["Delayed::Worker settings"] --> Map["Settings map"]
+    Plugins["Delayed::Plugin · Lifecycle"] --> Hooks["Execution hooks"]
+    Facade["Delayed::Job facade"] --> Admin["SolidQueue::Admin"]
+  end
+  Wrapper --> Core
+  Map --> Core
+  Hooks --> Core
+  Admin --> Core
+  subgraph Core["Solid Queue core"]
+    Watchdog["Run-time watchdog"]
+    Drain["work_off · drain mode"]
+    Range["Priority-range claims"]
+    Recovery["Death recovery retry"]
+    Exec["Execution hooks"]
+    Ops["check_latency · clear"]
+  end
+  Core --> SQL[("SQL")]
+  Core --> MDB[("MongoDB")]
+</pre></div>
+      </div>
+
+      <div class="pair">
+        <div class="diagram">
+          <div class="diagram-head"><h3>Claim lifecycle</h3><span class="chip core">Core</span></div>
+          <p>New: priority-range claims, <code>started_at</code> + <code>timeout_at</code> on start, timeout failures, death recovery.</p>
+          <div class="figure"><pre class="mermaid">
+stateDiagram-v2
+    direction TB
+    Ready --> Claimed : claim within priority range
+    Claimed --> Running : start sets started_at, timeout_at
+    Running --> Finished : perform returns
+    Running --> Failed : perform raises
+    Running --> Failed : max_run_time reached
+    Running --> Failed : watchdog sweep past timeout_at
+    Claimed --> Failed : process died
+    Failed --> Ready : death recovery, attempts below cap
+    Claimed --> Ready : graceful release before start
+</pre></div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-head"><h3>delayed_job run and retry</h3><span class="chip shim">Shim</span></div>
+          <p>delayed_job semantics on Active Job: 25 attempts, <code>attempts**4 + 5</code> back-off, hooks, <code>destroy_failed_jobs</code>.</p>
+          <div class="figure"><pre class="mermaid">
+stateDiagram-v2
+    direction TB
+    [*] --> Enqueued : enqueue hook
+    Enqueued --> Running : before hook
+    Running --> Succeeded : success, after hooks
+    Running --> Rescheduled : error hook, attempts below max_attempts
+    Rescheduled --> Enqueued : run_at = reschedule_at(now, attempts)
+    Running --> Kept : failure hook, destroy_failed_jobs false
+    Running --> Removed : failure hook, destroy_failed_jobs true
+    Succeeded --> [*]
+    Kept --> [*]
+    Removed --> [*]
+</pre></div>
+        </div>
+      </div>
+
+      <div class="pair">
+        <div class="diagram">
+          <div class="diagram-head"><h3>Drain mode and work_off</h3><span class="chip core">Core</span></div>
+          <p><code>jobs:workoff</code> and <code>--exit-on-complete</code> stop once nothing is ready or due in the worker's queues and priority range.</p>
+          <div class="figure"><pre class="mermaid">
+stateDiagram-v2
+    direction TB
+    [*] --> Polling
+    Polling --> Performing : claimed jobs
+    Performing --> Polling : pool has capacity
+    Polling --> Checking : nothing claimed
+    Checking --> Polling : ready or due jobs remain
+    Checking --> Drained : none remain, pool idle
+    Drained --> [*] : drained.solid_queue, supervisor stops
+</pre></div>
+        </div>
+
+        <div class="diagram">
+          <div class="diagram-head"><h3>Commands and tasks</h3><span class="chip both">Both</span></div>
+          <p>Every <code>script/delayed_job</code> flag and <code>jobs:*</code> task maps onto a Solid Queue supervisor or task.</p>
+          <div class="figure"><pre class="mermaid">
+flowchart LR
+  S["script/delayed_job start -n 2 --queues=a,b"] --> CMD["Delayed::Command"]
+  R["rake jobs:work · jobs:workoff"] --> CMD
+  CMD --> CFG["Worker config<br/>queues · priority range<br/>polling_interval · processes"]
+  CFG --> SUP["SolidQueue::Supervisor"]
+  CHK["rake jobs:check[300]"] --> LAT["solid_queue:check_latency"]
+  CLR["rake jobs:clear"] --> CL["solid_queue:clear"]
+  IMP["rake jobs:import"] --> IM["Delayed::Import → Solid Queue"]
+</pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="agents" aria-labelledby="agents-title">
+    <div class="section-head"><h2 id="agents-title">Parallel build</h2></div>
+    <p class="note">Four agents, four worktrees, no shared files. Each works test-first against both backends; I review and merge.</p>
+    <div class="split" id="agents-grid"></div>
+  </section>
+
+  <footer>
+    <span>Docs: <code>docs/delayed_job/plan.md</code> · <code>core.md</code> · <code>shim.md</code></span>
+    <span>Test gates: SQL suite (eager load), MongoDB suite, shim suite on both backends, RuboCop</span>
+  </footer>
+</div>
+
+<script>
+  const UPDATED = "2026-09-23 · shim CI green";
+  const STATUSES = [
+    { key: "planned", label: "Planned", color: "var(--planned)" },
+    { key: "building", label: "Building", color: "var(--building)" },
+    { key: "review", label: "Review", color: "var(--review)" },
+    { key: "done", label: "Done", color: "var(--done)" }
+  ];
+
+  const ITEMS = [
+    { rank: "1", title: "obj.delay, send_later, send_at, handle_asynchronously", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "2", title: "Default retries: 25 attempts, attempts**4 + 5, reschedule_at", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "3", title: "max_run_time watchdog", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: Timeout per thread or fiber, timeout_at sweep, WorkerTimeout, exactly_once_timeout cap" },
+    { rank: "4", title: "work_off(n) → [successes, failures]", track: "both", owner: "core-worker · shim-enqueue", status: "done", note: "Core + shim merged: SolidQueue.work_off, Delayed::Worker#work_off" },
+    { rank: "5", title: "Delayed::Worker.delay_jobs (bool or proc)", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "6", title: "Re-run claims failed by process death", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: retry_on_process_death, per-job retries_on_process_death from max_attempts" },
+    { rank: "7", title: "destroy_failed_jobs", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "8", title: "Drain mode: jobs:workoff, --exit-on-complete", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core + shim merged: exit_on_complete, jobs:workoff, --exit-on-complete" },
+    { rank: "9", title: "--min-priority / --max-priority", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core + shim merged: index-bound priority ranges, --min-priority / --max-priority" },
+    { rank: "10", title: "Procs for priority, queue, run_at", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "11", title: "Delayed::Plugin and Lifecycle events", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: around_perform, around_claim, around_poll, on_failure drive Delayed::Lifecycle" },
+    { rank: "12", title: "Mongoid documents as arguments", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "13", title: "jobs:check[max_age]", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core and shim merged" },
+    { rank: "14", title: "jobs:clear", track: "both", owner: "core-worker · shim-ops", status: "done", note: "Core and shim merged" },
+    { rank: "15", title: "queue_attributes (priority per queue)", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "16", title: "default_priority, default_queue_name", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "17", title: "script/delayed_job start · stop · restart · status · run", track: "shim", owner: "shim-ops", status: "done", note: "Merged; all flags and six commands, tested against a real daemon" },
+    { rank: "18", title: "display_name in logs and Admin", track: "both", owner: "core-exec · shim-enqueue", status: "done", note: "Core + shim merged: display_name in events, logs and Admin" },
+    { rank: "★", title: "Delivery modes: at_least_once · at_most_once · exactly_once", track: "both", owner: "core-once · shim-enqueue", status: "done", note: "Merged: delivers :mode, stored at enqueue, exactly_once_timeout 50s, crash-loop cap, per-job death retries, nestable attempts" },
+    { rank: "A", title: "Delayed::Job facade on both backends", track: "shim", owner: "shim-ops", status: "done", note: "Merged; slot handling covered for ready, claimed, blocked, failed jobs" },
+    { rank: "B", title: "Delayed::Worker settings and constants", track: "shim", owner: "shim-enqueue", status: "done", note: "Merged on solid-queue-shim" },
+    { rank: "C", title: ":delayed_job Active Job adapter", track: "shim", owner: "shim-ops", status: "done", note: "Merged" },
+    { rank: "D", title: "jobs:import from delayed_jobs rows", track: "shim", owner: "shim-ops", status: "done", note: "Merged; rows locked before moving, safe beside legacy workers" },
+    { rank: "E", title: "Shim CI on SQL and MongoDB", track: "shim", owner: "shim-ops", status: "done", note: "Pushed; SQL and MongoDB lanes" },
+    { rank: "·", title: "Plan and docs", track: "both", owner: "lead", status: "done" },
+    { rank: "·", title: "Fork, empty branch, scaffold booting on both backends", track: "shim", owner: "lead", status: "done" },
+    { rank: "·", title: "Docker test harness (SQL, MongoDB RS, shim)", track: "both", owner: "lead", status: "done" },
+    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "done", note: "Merged: shim 655 runs, 0 failures on all 4 lanes; Solid Queue and shim CI green" }
+  ];
+
+  const AGENTS = [
+    { name: "core-exec", track: "core", items: [ "Run-time watchdog (3)", "Death recovery retry (6)", "Execution hooks (11)", "display_name (18)" ] },
+    { name: "core-worker", track: "core", items: [ "Priority-range claims (9)", "Drain mode (8)", "SolidQueue.work_off (4)", "check_latency, clear (13, 14)" ] },
+    { name: "shim-enqueue", track: "shim", items: [ "Delay proxy, PerformableMethod (1, 10)", "JobWrapper retries, hooks (2, 7)", "Delayed::Worker (5, 15, 16, B)", "Lifecycle, plugins, Mongoid (11, 12)" ] },
+    { name: "core-once", track: "core", items: [ "Delivery guarantees suite (DJ parity)", "delivers :mode, default_delivery_mode", "exactly_once: one transaction, crash-loop cap", "Delivery modes docs" ] },
+    { name: "shim-ops", track: "shim", items: [ "Delayed::Job facade (A)", "Command, tasks (8, 9, 13, 14, 17)", "Adapter, import (C, D)", "CI, README (E)" ] }
+  ];
+
+  const trackLabel = { core: "Core", shim: "Shim", both: "Both" };
+  let filter = "all";
+  try { filter = localStorage.getItem("board-filter") || "all"; } catch (error) {}
+
+  function visible(item) {
+    return filter === "all" || item.track === filter || item.track === "both";
+  }
+
+  function el(tag, attrs = {}, children = []) {
+    const node = document.createElement(tag);
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (key === "text") node.textContent = value;
+      else node.setAttribute(key, value);
+    });
+    children.forEach((child) => child && node.appendChild(child));
+    return node;
+  }
+
+  function renderProgress() {
+    const bar = document.getElementById("progress");
+    const legend = document.getElementById("progress-legend");
+    bar.replaceChildren();
+    legend.replaceChildren();
+    const shown = ITEMS.filter(visible);
+    STATUSES.forEach((status) => {
+      const count = shown.filter((item) => item.status === status.key).length;
+      if (count) bar.appendChild(el("i", { style: `width:${(count / shown.length) * 100}%;background:${status.color}` }));
+      legend.appendChild(el("span", { style: `--c:${status.color}`, text: `${status.label} ${count}` }));
+    });
+  }
+
+  function renderBoard() {
+    const columns = document.getElementById("columns");
+    columns.replaceChildren();
+    STATUSES.forEach((status) => {
+      const items = ITEMS.filter((item) => item.status === status.key && visible(item));
+      const cards = el("div", { class: "cards" });
+      if (!items.length) cards.appendChild(el("div", { class: "empty", text: "Nothing here" }));
+      items.forEach((item) => {
+        const row = el("div", { class: "card-row" }, [
+          el("span", { class: `chip ${item.track}`, text: trackLabel[item.track] }),
+          el("span", { class: "owner", text: item.owner })
+        ]);
+        cards.appendChild(el("article", { class: "card", tabindex: "0" }, [
+          el("div", { class: "card-top" }, [
+            el("span", { class: "rank", text: item.rank }),
+            el("span", { class: "card-title", text: item.title })
+          ]),
+          row,
+          item.note ? el("div", { class: "note", text: item.note }) : null
+        ]));
+      });
+      columns.appendChild(el("div", { class: "column", style: `--c:${status.color}` }, [
+        el("div", { class: "column-head" }, [
+          el("h3", { text: status.label }),
+          el("span", { class: "count", text: String(items.length) })
+        ]),
+        cards
+      ]));
+    });
+  }
+
+  function renderAgents() {
+    const grid = document.getElementById("agents-grid");
+    grid.replaceChildren();
+    AGENTS.forEach((agent) => {
+      const list = el("ul");
+      agent.items.forEach((text) => list.appendChild(el("li", { text })));
+      grid.appendChild(el("div", { class: "agent" }, [
+        el("div", { class: "card-row" }, [ el("h3", { text: agent.name }), el("span", { class: `chip ${agent.track}`, text: trackLabel[agent.track] }) ]),
+        list
+      ]));
+    });
+  }
+
+  function setFilter(next) {
+    filter = next;
+    try { localStorage.setItem("board-filter", next); } catch (error) {}
+    document.querySelectorAll(".toolbar button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.filter === next));
+    });
+    renderProgress();
+    renderBoard();
+  }
+
+  document.querySelectorAll(".toolbar button").forEach((button) => {
+    button.addEventListener("click", () => setFilter(button.dataset.filter));
+  });
+  document.getElementById("updated").textContent = `Updated ${UPDATED}`;
+  renderAgents();
+  setFilter(filter);
+</script>
+<script type="module">
+  const dark = document.documentElement.dataset.theme === "dark" ||
+    (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const unrendered = [ ...document.querySelectorAll("pre.mermaid") ].filter((node) => !node.querySelector("svg"));
+  if (unrendered.length) {
+    const { default: mermaid } = await import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs");
+    mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", fontFamily: "IBM Plex Sans, Arial, sans-serif" });
+    await mermaid.run({ nodes: unrendered });
+  }
+</script>

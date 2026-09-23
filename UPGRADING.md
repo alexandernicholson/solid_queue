@@ -21,6 +21,16 @@ For atomic application and queue writes, use the same `Mongo::Client` and explic
 
 `SolidQueue::Admin` exposes native queue, job, batch, process, and recurring-task actions and queries. The released dashboard consumer expects Active Record relations; its MongoDB-aware adaptation has not been released. Focused lifecycle, payload, integration, and dashboard-adaptation checks have passed. The declared compatibility matrix and comparative benchmark remain release verification tools, not completed performance or broad-matrix proof.
 
+# Upgrading to add run-time limits
+The maintenance sweep for `limits_run_time` and `config.solid_queue.max_run_time` needs a `timeout_at` column and index on `solid_queue_claimed_executions`. Fresh installs get them with the base schema; existing Active Record installations copy the migration and run it:
+
+```bash
+bin/rails solid_queue:update
+bin/rails db:migrate
+```
+
+Until then, limits still apply inside the worker, but claims that outlive them aren't failed by supervisor maintenance. MongoDB installations run `bin/rails solid_queue:prepare` to add the `claimed_timeout` index; queue access raises a configuration error until they do.
+
 # Upgrading to add deduplication
 Deduplication (`deduplicates key: ...`) needs new SQL columns and a table. Fresh installs get them with the base schema; existing Active Record installations need to copy the migration and run it:
 

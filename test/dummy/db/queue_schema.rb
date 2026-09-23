@@ -27,9 +27,11 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.bigint "job_id", null: false
     t.bigint "process_id"
     t.datetime "started_at"
+    t.datetime "timeout_at"
     t.datetime "created_at", null: false
     t.index ["job_id"], name: "index_solid_queue_claimed_executions_on_job_id", unique: true
     t.index ["process_id", "job_id"], name: "index_solid_queue_claimed_executions_on_process_id_and_job_id"
+    t.index ["timeout_at"], name: "index_solid_queue_claimed_executions_on_timeout_at"
   end
 
   create_table "solid_queue_failed_executions", charset: "utf8mb4", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
@@ -52,6 +54,7 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "batch_id"
+    t.string "delivery_mode"
     t.index ["active_job_id"], name: "index_solid_queue_jobs_on_active_job_id"
     t.index ["batch_id"], name: "index_solid_queue_jobs_on_batch_id"
     t.index ["class_name"], name: "index_solid_queue_jobs_on_class_name"
@@ -172,6 +175,13 @@ ActiveRecord::Schema[7.1].define(version: 1) do
     t.datetime "created_at", null: false
     t.index ["job_id"], name: "index_solid_queue_batch_executions_on_job_id", unique: true
     t.index ["batch_id"], name: "index_solid_queue_batch_executions_on_batch_id"
+  end
+
+  create_table "exactly_once_effects", charset: "utf8mb4", collation: "utf8mb4_0900_ai_ci", force: :cascade do |t|
+    t.string "name", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["name"], name: "index_exactly_once_effects_on_name"
   end
 
   add_foreign_key "solid_queue_batch_executions", "solid_queue_batches", column: "batch_id", on_delete: :cascade

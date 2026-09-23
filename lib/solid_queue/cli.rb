@@ -24,6 +24,9 @@ module SolidQueue
       desc: "Whether to run only the scheduler process for recurring tasks",
       banner: "SOLID_QUEUE_ONLY_RECURRING"
 
+    class_option :exit_on_complete, type: :boolean,
+      desc: "Whether to stop the supervisor once workers find no more ready or due scheduled jobs in their queues and priority range"
+
     def self.exit_on_failure?
       true
     end

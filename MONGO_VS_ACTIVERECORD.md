@@ -137,6 +137,8 @@ The Mongo method names follow Active Record wherever a method does the same job.
 | `Execution.discard_all_in_batches` | runs on the current relation | takes filter keywords, e.g. `queue_name:` |
 | `ClaimedExecution.release_all` / `fail_all_with` | run on the current relation | take the executions as an argument (default: every claimed execution) |
 | `ClaimedExecution#failed_with` | finalize only | also wraps the finalization in `finalizing`, so `perform` calls it without wrapping it twice |
+| `prioritized_within(range)` | scope on `ReadyExecution` and `ScheduledExecution` | private `Execution` helper that adds `$gte`/`$lt`/`$lte` bounds on `priority` to a filter hash |
+| `Execution.discard_all_in_queue` | scopes to the queue's unfinished jobs, then `discard_all_in_batches` | `discard_all_in_batches(queue_name:)` |
 | `Record.distinct_values_of` | loose index scan emulation on PostgreSQL | `distinct` on the collection; execution classes scope it to their state |
 | `Semaphore.wait` / `signal` | `Proxy` with row lock and create-or-decrement | single transaction with upsert and conditional `$inc` |
 

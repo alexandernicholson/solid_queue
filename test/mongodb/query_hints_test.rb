@@ -45,6 +45,31 @@ class MongoQueryHintsTest < MongoTestCase
     assert_equal [ "ready_poll_by_queue_v2", "claimed_by_token_v2" ], hints
   end
 
+  test "claiming within a priority range keeps the ready poll hints" do
+    MongoRaceJob.set(priority: 5).perform_later
+    MongoRaceJob.set(priority: 5).perform_later
+
+    all = hints_on(:jobs) { SolidQueue::ReadyExecution.claim("*", 1, BSON::ObjectId.new, priority: 1..10) }
+    by_queue = hints_on(:jobs) { SolidQueue::ReadyExecution.claim([ "default" ], 1, BSON::ObjectId.new, priority: 1..) }
+
+    assert_equal [ "ready_poll_all_v2", "claimed_by_token_v2" ], all
+    assert_equal [ "ready_poll_by_queue_v2", "claimed_by_token_v2" ], by_queue
+  end
+
+  test "a priority range bounds the ready poll index scan without an in-memory sort" do
+    MongoRaceJob.set(priority: 5).perform_later
+
+    { "*" => { "priority" => [ "[1, 10]" ] }, [ "default" ] => { "queue_name" => [ "[\"default\", \"default\"]" ], "priority" => [ "[1, 10]" ] } }.each do |queues, bounds|
+      command = ready_poll_commands { SolidQueue::ReadyExecution.claim(queues, 1, BSON::ObjectId.new, priority: 1..10) }.first
+      plan = SolidQueue::Mongo.collection(:jobs).find(command["filter"], hint: command["hint"]).sort(command["sort"]).limit(1).explain
+
+      scan = plan_stages(plan).find { |stage| stage["stage"] == "IXSCAN" }
+      assert_equal command["hint"], scan["indexName"]
+      bounds.each { |field, expected| assert_equal expected, scan["indexBounds"][field] }
+      assert_not plan_stages(plan).any? { |stage| stage["stage"] == "SORT" }
+    end
+  end
+
   test "dispatching due scheduled jobs hints the scheduled dispatch index" do
     MongoRaceJob.set(wait: 1.hour).perform_later
     SolidQueue::Mongo.collection(:jobs).update_many({ state: "scheduled" }, { "$set" => { scheduled_at: 1.minute.ago } })
@@ -70,15 +95,35 @@ class MongoQueryHintsTest < MongoTestCase
     assert_equal [ "semaphore_expiration" ], hints_on(:semaphores) { SolidQueue::Semaphore.expire(batch_size: 10) }
   end
 
+  test "sweeping timed-out claims hints the claimed timeout index" do
+    assert_equal [ "claimed_timeout" ], hints_on(:jobs) { SolidQueue::ClaimedExecution.fail_timed_out }
+  end
+
   private
-    def hints_on(collection_name)
+    def hints_on(collection_name, &block)
+      commands_on(collection_name, &block).map { |command| command["hint"] }
+    end
+
+    def ready_poll_commands(&block)
+      commands_on(:jobs, &block).select { |command| command["hint"].to_s.start_with?("ready_poll") }
+    end
+
+    def commands_on(collection_name)
       recorder = CommandRecorder.new
       client = SolidQueue::Mongo.client
       client.subscribe(::Mongo::Monitoring::COMMAND, recorder)
       yield
       name = "solid_queue_#{collection_name}"
-      recorder.commands.select { |command| (command["find"] || command["aggregate"]) == name }.map { |command| command["hint"] }
+      recorder.commands.select { |command| (command["find"] || command["aggregate"]) == name }
     ensure
       client&.unsubscribe(::Mongo::Monitoring::COMMAND, recorder)
+    end
+
+    def plan_stages(node)
+      case node
+      when Hash then (node.key?("stage") ? [ node ] : []) + node.values.flat_map { |value| plan_stages(value) }
+      when Array then node.flat_map { |value| plan_stages(value) }
+      else []
+      end
     end
 end

@@ -5,6 +5,7 @@ module SolidQueue
     belongs_to :process
 
     scope :orphaned, -> { where.missing(:process) }
+    scope :timed_out, -> { where(timeout_at: ..Time.current) }
 
     class Result < Struct.new(:success, :error)
       def success?
@@ -20,6 +21,15 @@ module SolidQueue
       def initialize(claimed_execution, cause:)
         super("Failed to finalize claimed execution #{claimed_execution.id} (job #{claimed_execution.job_id}): #{cause.class}: #{cause.message}")
         set_backtrace(cause.backtrace) if cause.backtrace
+      end
+    end
+
+    class Uncommitted < StandardError
+      attr_reader :error
+
+      def initialize(error)
+        @error = error
+        super(error.message)
       end
     end
 
@@ -64,17 +74,28 @@ module SolidQueue
         includes(:job).tap do |executions|
           return if executions.empty?
 
+          uncommitted, executions = executions.partition(&:uncommitted_exactly_once?)
+          release_all_uncommitted(uncommitted, error)
+          return if executions.empty?
+
+          failed_job_ids = []
           SolidQueue.instrument(:fail_many_claimed) do |payload|
-            executions.each do |execution|
-              execution.failed_with(error)
-            end
+            failed_job_ids = executions.select { |execution| execution.failed_with(error) }.select(&:rerunnable?).map(&:job_id)
 
             payload[:process_ids] = executions.map(&:process_id).uniq
             payload[:job_ids] = executions.map(&:job_id).uniq
+            payload[:display_names] = display_names_for(executions)
             payload[:size] = executions.size
             payload[:error] = error
           end
+          DeathRecovery.recover(failed_job_ids, error)
         end
+      end
+
+      def fail_timed_out
+        return 0 unless column_names.include?("timeout_at")
+
+        timed_out.includes(:job).to_a.count { |execution| fail_timed_out_execution(execution) }
       end
 
       def discard_all_in_batches(*)
@@ -84,30 +105,91 @@ module SolidQueue
       def discard_all_from_jobs(*)
         raise UndiscardableError, "Can't discard jobs in progress"
       end
+
+      def display_names_for(executions)
+        executions.to_h { |execution| [ execution.job_id, execution.job.display_name ] }
+      end
+
+      private
+        def release_all_uncommitted(executions, error)
+          return if executions.empty?
+
+          SolidQueue.instrument(:release_uncommitted, job_ids: executions.map(&:job_id), process_ids: executions.map(&:process_id).uniq,
+            display_names: display_names_for(executions), error: error) do |payload|
+            outcomes = executions.group_by { |execution| execution.release_uncommitted(error) }
+
+            %i[ released exhausted locked ].each { |outcome| payload[outcome] = outcomes.fetch(outcome, []).map(&:job_id) }
+            payload[:size] = payload[:released].size
+          end
+        end
+
+        def fail_timed_out_execution(execution)
+          max_run_time = execution.job.run_time_limit
+          return false unless execution.failed_with(Processes::RunTimeExceededError.for(max_run_time))
+
+          SolidQueue.instrument(:run_time_exceeded, job_id: execution.job_id, process_id: execution.process_id,
+            max_run_time: max_run_time, started_at: execution.started_at, display_name: execution.job.display_name)
+          true
+        end
     end
 
     def perform
-      return if job.deduplicated? && !start
-
-      result = execute
-
-      if result.success?
-        finalizing { finished }
-      else
-        finalizing { failed_with(result.error) }
-        raise result.error
+      performed = false
+      ExecutionHooks.run(:around_perform, self) do
+        performed = true
+        perform_claimed
       end
+      raise ExecutionHooks::NotPerformedError unless performed
+    rescue Exception => error
+      record_failure(error) unless performed
+      raise
     end
 
     def release
-      SolidQueue.instrument(:release_claimed, job_id: job.id, process_id: process_id) do
-        unless_already_finalized do
-          next false if started_at?
+      SolidQueue.instrument(:release_claimed, job_id: job.id, process_id: process_id, display_name: job.display_name) do
+        if job.exactly_once?
+          release_uncommitted == :released
+        else
+          unless_already_finalized do
+            next false if started_at?
 
-          job.dispatch_bypassing_concurrency_limits
-          destroy!
+            job.dispatch_bypassing_concurrency_limits
+            destroy!
+          end
         end
       end
+    end
+
+    def release_uncommitted(error = nil)
+      outcome = transaction do
+        if !self.class.unscoped.non_blocking_lock.find_by(id: id, started_at: nil)
+          self.class.unscoped.exists?(id: id, started_at: nil) ? :locked : false
+        elsif error && DeathRecovery.uncommitted_exhausted?(job)
+          job.failed_with(error)
+          destroy!
+          :exhausted
+        else
+          job.count_interrupted_execution if error
+          job.dispatch_bypassing_concurrency_limits
+          destroy!
+          :released
+        end
+      end
+
+      job.unblock_next_blocked_job if outcome == :exhausted
+      outcome
+    end
+
+    def uncommitted_exactly_once?
+      started_at.nil? && job.exactly_once?
+    end
+
+    def rerunnable?
+      !(started_at? && job.at_most_once?)
+    end
+
+    def within_attempt(&block)
+      transaction(requires_new: true, &block)
     end
 
     def discard
@@ -119,6 +201,59 @@ module SolidQueue
     end
 
     private
+      def perform_claimed
+        return perform_exactly_once if job.exactly_once?
+
+        run_time_limit = job.run_time_limit
+        return if (job.deduplicated? || job.at_most_once? || run_time_limit) && !start(run_time_limit)
+
+        result = execute(run_time_limit)
+
+        if result.success?
+          finalizing { finished }
+        else
+          record_failure(result.error)
+          raise result.error
+        end
+      end
+
+      def perform_exactly_once
+        run_time_limit = job.run_time_limit
+        error = nil
+
+        outcome = SolidQueue.instrument(:perform_exactly_once, job_id: job.id, process_id: process_id, display_name: job.display_name, run_time_limit: run_time_limit) do |payload|
+          payload[:outcome] = begin
+            transaction do
+              next :conflict unless start(run_time_limit)
+
+              result = ActiveJob::DeliveryModes.performing(self) { execute(run_time_limit) }
+              raise Uncommitted.new(result.error) unless result.success?
+
+              job.finished!
+              destroy!
+              :committed
+            end
+          rescue Uncommitted => uncommitted
+            error = uncommitted.error
+            :rolled_back
+          rescue => failure
+            error = failure
+            :rolled_back
+          end
+        end
+
+        if error
+          record_failure(error)
+          raise error
+        elsif outcome == :committed
+          job.unblock_next_blocked_job
+        end
+      end
+
+      def record_failure(error)
+        ExecutionHooks.notify(:on_failure, self, error) if finalizing { failed_with(error) }
+      end
+
       # A failure here means the job already ran but we couldn't record the
       # outcome, and the claim is still held by this living worker, where no
       # recovery can reach it: it's a process problem, not a job problem
@@ -130,17 +265,31 @@ module SolidQueue
         raise
       end
 
-      def start
-        self.class.where(id: id, started_at: nil).update_all(started_at: Time.current) == 1
+      def start(run_time_limit)
+        now = Time.current
+        attributes = { started_at: now }
+        attributes[:timeout_at] = now + run_time_limit + SolidQueue.run_time_grace if run_time_limit && has_attribute?(:timeout_at)
+
+        self.class.where(id: id, started_at: nil).update_all(attributes) == 1
       end
 
-      def execute
+      def execute(run_time_limit)
         raise Job::ClassMissingError.for(job) if job.job_class.nil?
 
-        ActiveJob::Base.execute(job.arguments.merge("provider_job_id" => job.id))
+        within_run_time_limit(run_time_limit) do
+          ActiveJob::Base.execute(job.arguments.merge("provider_job_id" => job.id))
+        end
         Result.new(true, nil)
       rescue Exception => e
         Result.new(false, e)
+      end
+
+      def within_run_time_limit(run_time_limit, &block)
+        if run_time_limit
+          Timeout.timeout(run_time_limit.to_f, Processes::RunTimeExceededError, Processes::RunTimeExceededError.for(run_time_limit).message, &block)
+        else
+          yield
+        end
       end
 
       def finished
@@ -159,6 +308,7 @@ module SolidQueue
         # a job that already finished or failed. Only the actor that owned and
         # finalized the claim gets here, so the lock is released exactly once.
         job.unblock_next_blocked_job if finalized
+        finalized
       end
 
       def unless_already_finalized

@@ -6,26 +6,31 @@ module PersistenceContract
       class: %i[ enqueue enqueue_all find find_by clear_finished_in_batches ],
       instance: %i[ id active_job_id class_name queue_name priority arguments status finished? ready? claimed? failed?
         scheduled? blocked? finished! failed_with retry discard dispatch prepare_for_execution due?
-        concurrency_limited? deduplicated? unblock_next_blocked_job batch ]
+        concurrency_limited? deduplicated? unblock_next_blocked_job batch run_time_limit display_name ]
     },
     "SolidQueue::ReadyExecution" => {
-      class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs
+        latency count_waiting_longer_than discard_all_in_queue ],
       instance: %i[ job job_id discard ]
     },
     "SolidQueue::ClaimedExecution" => {
-      class: %i[ claiming release_for_process fail_for_process fail_orphaned release_all fail_all_with ],
-      instance: %i[ job job_id process_id perform release failed_with discard ]
+      class: %i[ claiming release_for_process fail_for_process fail_orphaned release_all fail_all_with fail_timed_out
+        display_names_for ],
+      instance: %i[ job job_id process_id started_at timeout_at perform release failed_with discard ]
     },
     "SolidQueue::FailedExecution" => {
-      class: %i[ retry_all discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ retry_all discard_all_in_batches discard_all_from_jobs
+        discard_all_in_queue ],
       instance: %i[ job job_id retry discard exception_class message backtrace ]
     },
     "SolidQueue::ScheduledExecution" => {
-      class: %i[ dispatch_next_batch discard_all_in_batches discard_all_from_jobs none? ],
+      class: %i[ dispatch_next_batch discard_all_in_batches discard_all_from_jobs none?
+        due_count_across discard_all_in_queue ],
       instance: %i[ job job_id discard ]
     },
     "SolidQueue::BlockedExecution" => {
-      class: %i[ unblock release_many release_one discard_all_in_batches discard_all_from_jobs ],
+      class: %i[ unblock release_many release_one discard_all_in_batches discard_all_from_jobs
+        discard_all_in_queue ],
       instance: %i[ job job_id release discard ]
     },
     "SolidQueue::Semaphore" => {
@@ -68,5 +73,27 @@ module PersistenceContract
     end
 
     assert_empty missing, "Missing persistence operations: #{missing.join(", ")}"
+  end
+
+  def test_claims_and_counts_accept_a_priority_range
+    [ [ "SolidQueue::ReadyExecution", :claim ], [ "SolidQueue::ReadyExecution", :aggregated_count_across ], [ "SolidQueue::ScheduledExecution", :due_count_across ] ].each do |model_name, operation|
+      assert_includes model_name.constantize.method(operation).parameters, [ :key, :priority ], "#{model_name}.#{operation} takes no priority: range"
+    end
+  end
+
+  DELIVERY_MODE_OPERATIONS = {
+    "SolidQueue::Job" => %i[ delivery_mode exactly_once? at_most_once? ],
+    "SolidQueue::ClaimedExecution" => %i[ release_uncommitted uncommitted_exactly_once? rerunnable? within_attempt ]
+  }.freeze
+
+  def test_models_implement_the_delivery_mode_contract
+    missing = DELIVERY_MODE_OPERATIONS.flat_map do |model_name, operations|
+      operations.reject { |name| model_name.constantize.method_defined?(name) }.map { |name| "#{model_name}##{name}" }
+    end
+    missing += %i[ exactly_once_session default_delivery_mode default_delivery_mode= exactly_once_timeout exactly_once_timeout= ].reject { |name| SolidQueue.respond_to?(name) }.map { |name| "SolidQueue.#{name}" }
+    missing += %i[ within_attempt current_execution ].reject { |name| ActiveJob::DeliveryModes.respond_to?(name) }.map { |name| "ActiveJob::DeliveryModes.#{name}" }
+    missing += %i[ attempts_for uncommitted_exhausted? ].reject { |name| SolidQueue::DeathRecovery.respond_to?(name) }.map { |name| "SolidQueue::DeathRecovery.#{name}" }
+
+    assert_empty missing, "Missing delivery mode operations: #{missing.join(", ")}"
   end
 end

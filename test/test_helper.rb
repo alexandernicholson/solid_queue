@@ -56,6 +56,7 @@ class ActiveSupport::TestCase
     SolidQueue::ReadyExecution.delete_all
     SolidQueue::ClaimedExecution.delete_all
     SolidQueue::FailedExecution.delete_all
+    SolidQueue::Batch.destroy_all if SolidQueue::Batch.migrated?
     JobResult.delete_all
   end
 

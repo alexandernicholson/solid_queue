@@ -51,6 +51,17 @@ module SolidQueue
         end
       end
 
+      def restart_transaction
+        session = current_session
+        raise ArgumentError, "no owned MongoDB transaction to restart" unless context[:owned_transaction] && session
+
+        abort_transaction(session)
+        restore_transaction_records(context[:transaction_records])
+        context[:transaction_records].clear
+        context[:after_commit].clear
+        session.start_transaction(read_concern: { level: :snapshot }, write_concern: { w: :majority })
+      end
+
       def track_transaction_record(record)
         records = context[:transaction_records]
         return unless records

@@ -41,14 +41,59 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
   end
 
   def fail_many_claimed(event)
-    attributes = event.payload.slice(:job_ids, :process_ids)
+    attributes = event.payload.slice(:job_ids, :process_ids, :display_names)
     attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]
 
     warn formatted_event(event, action: "Fail claimed jobs", **attributes)
   end
 
   def release_claimed(event)
-    info formatted_event(event, action: "Release claimed job", **event.payload.slice(:job_id, :process_id))
+    info formatted_event(event, action: "Release claimed job", **event.payload.slice(:job_id, :process_id, :display_name))
+  end
+
+  def perform_exactly_once(event)
+    level = { committed: :debug, rolled_back: :info }.fetch(event.payload[:outcome], :warn)
+
+    public_send level, formatted_event(event, action: "Perform exactly-once job", **event.payload.slice(:job_id, :process_id, :display_name, :run_time_limit, :outcome))
+  end
+
+  def release_uncommitted(event)
+    attributes = event.payload.slice(:job_ids, :released, :exhausted, :locked, :process_ids, :display_names)
+    attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]
+    level = event.payload[:exhausted].present? ? :warn : :info
+
+    public_send level, formatted_event(event, action: "Release uncommitted exactly-once claims", **attributes)
+  end
+
+  def run_time_exceeded(event)
+    attributes = event.payload.slice(:job_id, :process_id, :display_name, :max_run_time)
+    attributes[:started_at] = event.payload[:started_at]&.iso8601
+
+    warn formatted_event(event, action: "Fail job that exceeded its run time", **attributes)
+  end
+
+  def work_off(event)
+    attributes = event.payload.slice(:queues, :limit, :priority, :successes, :failures)
+    attributes[:priority] = attributes[:priority]&.to_s
+
+    info formatted_event(event, action: "Work off jobs", **attributes)
+  end
+
+  def drained(event)
+    attributes = event.payload.slice(:process_id, :name, :queues).merge(priority_range: event.payload[:priority_range]&.to_s).compact
+
+    info formatted_event(event, action: "Worker drained", **attributes)
+  end
+
+  def check_latency(event)
+    info formatted_event(event, action: "Check queue latency", **event.payload.slice(:max_age, :count, :latency))
+  end
+
+  def death_recovery(event)
+    attributes = event.payload.slice(:job_ids, :retried, :exhausted)
+    attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]
+
+    info formatted_event(event, action: "Retry jobs failed by process death", **attributes)
   end
 
   def retry_all(event)

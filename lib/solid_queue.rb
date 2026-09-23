@@ -55,6 +55,10 @@ module SolidQueue
     Mongo.with_session(session, client: client, &block)
   end
 
+  def exactly_once_session
+    Mongo.current_session if mongodb? && ActiveJob::DeliveryModes.current_execution
+  end
+
   mattr_accessor :logger, default: DEFAULT_LOGGER
   mattr_accessor :app_executor, :on_thread_error, :connects_to
 
@@ -75,6 +79,41 @@ module SolidQueue
   mattr_accessor :clear_finished_jobs_after, default: 1.day
   mattr_accessor :default_concurrency_control_period, default: 3.minutes
 
+  mattr_reader :max_run_time
+  mattr_reader :run_time_grace, default: 30.seconds
+  mattr_reader :retry_on_process_death
+
+  def max_run_time=(limit)
+    unless limit.nil? || (limit.is_a?(Numeric) && limit.positive?)
+      raise ArgumentError, "max_run_time must be nil or a positive duration, got #{limit.inspect}"
+    end
+
+    @@max_run_time = limit
+  end
+
+  def run_time_grace=(grace)
+    raise ArgumentError, "run_time_grace must be a duration of zero or more, got #{grace.inspect}" unless grace.is_a?(Numeric) && !grace.negative?
+
+    @@run_time_grace = grace
+  end
+
+  def retry_on_process_death=(settings)
+    @@retry_on_process_death = settings.nil? ? nil : DeathRecovery.settings_from(settings)
+  end
+
+  mattr_reader :default_delivery_mode, default: :at_least_once
+  mattr_reader :exactly_once_timeout, default: 50.seconds
+
+  def default_delivery_mode=(mode)
+    @@default_delivery_mode = ActiveJob::DeliveryModes.mode!(mode)
+  end
+
+  def exactly_once_timeout=(timeout)
+    raise ArgumentError, "exactly_once_timeout must be a positive duration, got #{timeout.inspect}" unless timeout.is_a?(Numeric) && timeout.positive?
+
+    @@exactly_once_timeout = timeout
+  end
+
   mattr_reader :time_zone
 
   def time_zone=(zone)
@@ -84,7 +123,17 @@ module SolidQueue
     end
   end
 
+  mattr_accessor :procline_prefix
+
+  def work_off(...)
+    WorkOff.new(...).run
+  end
+
   delegate :on_start, :on_stop, :on_exit, to: Supervisor
+
+  ExecutionHooks::KINDS.each do |kind|
+    define_method(kind) { |&block| ExecutionHooks.register(kind, &block) }
+  end
 
   def schedule_recurring_task(key, **options)
     RecurringTask.create_dynamic_task(key, **options)

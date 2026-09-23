@@ -76,6 +76,91 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_match_logged :debug, "MongoDB command", "status: :succeeded, command_name: \"find\", database_name: \"queue\", duration: 0.002, address: \"127.0.0.1:27017\""
   end
 
+  test "run time exceeded" do
+    started_at = Time.now
+    attach_log_subscriber
+    instrument "run_time_exceeded.solid_queue", job_id: 42, process_id: 7, max_run_time: 10.minutes, started_at: started_at, display_name: "User#welcome"
+
+    assert_match_logged :warn, "Fail job that exceeded its run time", "job_id: 42, process_id: 7, display_name: \"User#welcome\", max_run_time: 10 minutes, started_at: \"#{started_at.iso8601}\""
+  end
+
+  test "death recovery" do
+    attach_log_subscriber
+    instrument "death_recovery.solid_queue", job_ids: [ 1, 2, 3 ], retried: [ 1, 2 ], exhausted: [ 3 ], error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :info, "Retry jobs failed by process death", "job_ids: [1, 2, 3], retried: [1, 2], exhausted: [3], error: \"SolidQueue::Processes::ProcessMissingError The process that was running this job no longer exists\""
+  end
+
+  test "work off" do
+    attach_log_subscriber
+    instrument "work_off.solid_queue", queues: [ "*" ], limit: 100, priority: 0..10, successes: 3, failures: 1
+
+    assert_match_logged :info, "Work off jobs", "queues: [\"*\"], limit: 100, priority: \"0..10\", successes: 3, failures: 1"
+  end
+
+  test "drained" do
+    attach_log_subscriber
+    instrument "drained.solid_queue", process_id: 7, name: "worker-1", queues: [ "a", "b" ], priority_range: 1..5
+
+    assert_match_logged :info, "Worker drained", "process_id: 7, name: \"worker-1\", queues: [\"a\", \"b\"], priority_range: \"1..5\""
+  end
+
+  test "check latency" do
+    attach_log_subscriber
+    instrument "check_latency.solid_queue", max_age: 300, count: 2, latency: 451
+
+    assert_match_logged :info, "Check queue latency", "max_age: 300, count: 2, latency: 451"
+  end
+
+  test "fail claimed jobs includes display names" do
+    attach_log_subscriber
+    instrument "fail_many_claimed.solid_queue", job_ids: [ 42 ], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, error: RuntimeError.new("gone")
+
+    assert_match_logged :warn, "Fail claimed jobs", "job_ids: [42], process_ids: [7], display_names: #{({ 42 => "User#welcome" }).inspect}, error: \"RuntimeError gone\""
+  end
+
+  test "release claimed job includes the display name" do
+    attach_log_subscriber
+    instrument "release_claimed.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome"
+
+    assert_match_logged :info, "Release claimed job", "job_id: 42, process_id: 7, display_name: \"User#welcome\""
+  end
+
+  test "perform exactly once" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :committed
+
+    assert_match_logged :debug, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :committed"
+  end
+
+  test "perform exactly once rolled back" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :rolled_back
+
+    assert_match_logged :info, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :rolled_back"
+  end
+
+  test "perform exactly once conflict" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :conflict
+
+    assert_match_logged :warn, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :conflict"
+  end
+
+  test "release uncommitted exactly-once claims" do
+    attach_log_subscriber
+    instrument "release_uncommitted.solid_queue", job_ids: [ 42, 43 ], released: [ 42 ], exhausted: [], locked: [ 43 ], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, size: 1, error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :info, "Release uncommitted exactly-once claims", "job_ids: [42, 43], released: [42], exhausted: [], locked: [43], process_ids: [7], display_names: #{({ 42 => "User#welcome" }).inspect}, error: \"SolidQueue::Processes::ProcessMissingError The process that was running this job no longer exists\""
+  end
+
+  test "exhausted uncommitted exactly-once claims" do
+    attach_log_subscriber
+    instrument "release_uncommitted.solid_queue", job_ids: [ 42 ], released: [], exhausted: [ 42 ], locked: [], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, size: 0, error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :warn, "Release uncommitted exactly-once claims", "job_ids: [42], released: [], exhausted: [42], locked: [], process_ids: [7]"
+  end
+
   private
     def attach_log_subscriber
       ActiveSupport::LogSubscriber.attach_to :solid_queue, SolidQueue::LogSubscriber.new
