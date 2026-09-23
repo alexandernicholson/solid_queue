@@ -18,10 +18,10 @@ module SolidQueue
       end
     end
 
-    def retry
-      SolidQueue.instrument(:retry, job_id: job.id) do
+    def retry(interrupted: false)
+      SolidQueue.instrument(:retry, job_id: job.id, interrupted: interrupted) do
         with_lock do
-          job.reset_execution_counters
+          interrupted ? job.count_interrupted_execution : job.reset_execution_counters
           job.prepare_for_execution
           destroy!
         end

@@ -33,6 +33,11 @@ module SolidQueue
         arguments["exception_executions"] = {}
         save!
       end
+
+      def count_interrupted_execution
+        arguments["executions"] = arguments.fetch("executions", 0).to_i + 1
+        save!
+      end
     end
   end
 end

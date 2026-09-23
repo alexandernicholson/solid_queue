@@ -58,6 +58,18 @@ module SolidQueue
         fail_many(claimed_for, error)
       end
 
+      def fail_timed_out
+        collection.find(
+          { state: "claimed", timeout_at: { "$lte" => Time.current } },
+          hint: "claimed_timeout",
+          **SolidQueue::Mongo.session_options
+        ).map { |document| from_document(document) }.count { |execution| fail_timed_out_execution(execution) }
+      end
+
+      def display_names_for(executions)
+        executions.to_h { |execution| [ execution.job_id, execution.display_name ] }
+      end
+
       def discard_all_in_batches(*)
         raise UndiscardableError, "Can't discard jobs in progress"
       end
@@ -84,32 +96,45 @@ module SolidQueue
         def fail_many(executions, error)
           return 0 if executions.empty?
 
+          failed = []
           SolidQueue.instrument(:fail_many_claimed) do |payload|
-            failed = executions.count { |execution| execution.failed_with(error) }
+            failed = executions.select { |execution| execution.failed_with(error) }
             payload[:process_ids] = executions.map(&:process_id).uniq
             payload[:job_ids] = executions.map(&:job_id).uniq
-            payload[:size] = failed
+            payload[:display_names] = display_names_for(executions)
+            payload[:size] = failed.size
             payload[:error] = error
-            failed
           end
+          failed_job_ids = failed.map(&:job_id)
+          SolidQueue::Mongo.after_commit { DeathRecovery.recover(failed_job_ids, error) }
+          failed.size
+        end
+
+        def fail_timed_out_execution(execution)
+          max_run_time = execution.run_time_limit
+          return false unless execution.failed_with(Processes::RunTimeExceededError.for(max_run_time))
+
+          SolidQueue.instrument(:run_time_exceeded, job_id: execution.job_id, process_id: execution.process_id,
+            max_run_time: max_run_time, started_at: execution.started_at, display_name: execution.display_name)
+          true
         end
     end
 
     def perform
-      return if deduplicated? && !start
-
-      result = execute
-      if result.success?
-        finalizing { finalize_success }
-      else
-        finalizing { finalize_failure(result.error) }
-        raise result.error
+      performed = false
+      ExecutionHooks.run(:around_perform, self) do
+        performed = true
+        perform_claimed
       end
+      raise ExecutionHooks::NotPerformedError unless performed
+    rescue Exception => error
+      record_failure(error) unless performed
+      raise
     end
 
     def release
       released = false
-      SolidQueue.instrument(:release_claimed, job_id: job_id, process_id: process_id) do
+      SolidQueue.instrument(:release_claimed, job_id: job_id, process_id: process_id, display_name: display_name) do
         transaction(operation: "release_claimed_job") do
           released = false
           result = self.class.collection.update_one(
@@ -132,13 +157,40 @@ module SolidQueue
     end
 
     private
-      def execute
+      def perform_claimed
+        run_time_limit = self.run_time_limit
+        return if (deduplicated? || run_time_limit) && !start(run_time_limit)
+
+        result = execute(run_time_limit)
+        if result.success?
+          finalizing { finalize_success }
+        else
+          record_failure(result.error)
+          raise result.error
+        end
+      end
+
+      def record_failure(error)
+        ExecutionHooks.notify(:on_failure, self, error) if failed_with(error)
+      end
+
+      def execute(run_time_limit)
         raise Job::ClassMissingError.for(job) if job.job_class.nil?
 
-        ActiveJob::Base.execute(job.arguments.merge("provider_job_id" => job.id))
+        within_run_time_limit(run_time_limit) do
+          ActiveJob::Base.execute(job.arguments.merge("provider_job_id" => job.id))
+        end
         Result.new(true, nil)
       rescue Exception => error
         Result.new(false, error)
+      end
+
+      def within_run_time_limit(run_time_limit, &block)
+        if run_time_limit
+          Timeout.timeout(run_time_limit.to_f, Processes::RunTimeExceededError, Processes::RunTimeExceededError.for(run_time_limit).message, &block)
+        else
+          yield
+        end
       end
 
       def finalizing
@@ -197,13 +249,17 @@ module SolidQueue
       end
 
       def claim_unsets
-        { process_id: true, claim_token: true, claimed_at: true, started_at: true }
+        { process_id: true, claim_token: true, claimed_at: true, started_at: true, timeout_at: true }
       end
 
-      def start
+      def start(run_time_limit)
+        now = Time.current
+        values = { started_at: now }
+        values[:timeout_at] = now + run_time_limit + SolidQueue.run_time_grace if run_time_limit
+
         self.class.collection.update_one(
           ownership_filter.merge(started_at: nil),
-          { "$set" => { started_at: Time.current } },
+          { "$set" => values },
           **SolidQueue::Mongo.session_options
         ).modified_count == 1
       end

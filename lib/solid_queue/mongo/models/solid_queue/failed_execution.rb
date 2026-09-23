@@ -49,19 +49,23 @@ module SolidQueue
         end
     end
 
-    def retry
+    def retry(interrupted: false)
       retried = false
-      SolidQueue.instrument(:retry, job_id: job_id) do
+      SolidQueue.instrument(:retry, job_id: job_id, interrupted: interrupted) do
         transaction(operation: "retry_failed_job") do
           retried = false
           payload = arguments.deep_dup
-          payload["executions"] = 0
-          payload["exception_executions"] = {}
+          if interrupted
+            payload["executions"] = payload.fetch("executions", 0).to_i + 1
+          else
+            payload["executions"] = 0
+            payload["exception_executions"] = {}
+          end
           result = self.class.collection.update_one(
             { _id: bson_id, state: "failed" },
             {
               "$set" => { arguments: ActiveSupport::JSON.encode(payload) },
-              "$unset" => { state: true, error: true, finished_at: true, process_id: true, claim_token: true, claimed_at: true, started_at: true }
+              "$unset" => { state: true, error: true, finished_at: true, process_id: true, claim_token: true, claimed_at: true, started_at: true, timeout_at: true }
             },
             **SolidQueue::Mongo.session_options
           )

@@ -41,14 +41,28 @@ class SolidQueue::LogSubscriber < ActiveSupport::LogSubscriber
   end
 
   def fail_many_claimed(event)
-    attributes = event.payload.slice(:job_ids, :process_ids)
+    attributes = event.payload.slice(:job_ids, :process_ids, :display_names)
     attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]
 
     warn formatted_event(event, action: "Fail claimed jobs", **attributes)
   end
 
   def release_claimed(event)
-    info formatted_event(event, action: "Release claimed job", **event.payload.slice(:job_id, :process_id))
+    info formatted_event(event, action: "Release claimed job", **event.payload.slice(:job_id, :process_id, :display_name))
+  end
+
+  def run_time_exceeded(event)
+    attributes = event.payload.slice(:job_id, :process_id, :display_name, :max_run_time)
+    attributes[:started_at] = event.payload[:started_at]&.iso8601
+
+    warn formatted_event(event, action: "Fail job that exceeded its run time", **attributes)
+  end
+
+  def death_recovery(event)
+    attributes = event.payload.slice(:job_ids, :retried, :exhausted)
+    attributes[:error] = formatted_error(event.payload[:error]) if event.payload[:error]
+
+    info formatted_event(event, action: "Retry jobs failed by process death", **attributes)
   end
 
   def retry_all(event)
