@@ -24,6 +24,15 @@ module SolidQueue
       end
     end
 
+    class Uncommitted < StandardError
+      attr_reader :error
+
+      def initialize(error)
+        @error = error
+        super(error.message)
+      end
+    end
+
     class << self
       def claiming(job_ids, process_id, &block)
         job_data = Array(job_ids).collect { |job_id| { job_id: job_id, process_id: process_id } }
@@ -65,9 +74,13 @@ module SolidQueue
         includes(:job).tap do |executions|
           return if executions.empty?
 
+          uncommitted, executions = executions.partition(&:uncommitted_exactly_once?)
+          release_all_uncommitted(uncommitted, error)
+          return if executions.empty?
+
           failed_job_ids = []
           SolidQueue.instrument(:fail_many_claimed) do |payload|
-            failed_job_ids = executions.select { |execution| execution.failed_with(error) }.map(&:job_id)
+            failed_job_ids = executions.select { |execution| execution.failed_with(error) }.select(&:rerunnable?).map(&:job_id)
 
             payload[:process_ids] = executions.map(&:process_id).uniq
             payload[:job_ids] = executions.map(&:job_id).uniq
@@ -98,6 +111,18 @@ module SolidQueue
       end
 
       private
+        def release_all_uncommitted(executions, error)
+          return if executions.empty?
+
+          SolidQueue.instrument(:release_uncommitted, job_ids: executions.map(&:job_id), process_ids: executions.map(&:process_id).uniq,
+            display_names: display_names_for(executions), error: error) do |payload|
+            outcomes = executions.group_by { |execution| execution.release_uncommitted(error) }
+
+            %i[ released exhausted locked ].each { |outcome| payload[outcome] = outcomes.fetch(outcome, []).map(&:job_id) }
+            payload[:size] = payload[:released].size
+          end
+        end
+
         def fail_timed_out_execution(execution)
           max_run_time = execution.job.run_time_limit
           return false unless execution.failed_with(Processes::RunTimeExceededError.for(max_run_time))
@@ -122,13 +147,49 @@ module SolidQueue
 
     def release
       SolidQueue.instrument(:release_claimed, job_id: job.id, process_id: process_id, display_name: job.display_name) do
-        unless_already_finalized do
-          next false if started_at?
+        if job.exactly_once?
+          release_uncommitted == :released
+        else
+          unless_already_finalized do
+            next false if started_at?
 
-          job.dispatch_bypassing_concurrency_limits
-          destroy!
+            job.dispatch_bypassing_concurrency_limits
+            destroy!
+          end
         end
       end
+    end
+
+    def release_uncommitted(error = nil)
+      outcome = transaction do
+        if !self.class.unscoped.non_blocking_lock.find_by(id: id, started_at: nil)
+          self.class.unscoped.exists?(id: id, started_at: nil) ? :locked : false
+        elsif error && DeathRecovery.uncommitted_exhausted?(job)
+          job.failed_with(error)
+          destroy!
+          :exhausted
+        else
+          job.count_interrupted_execution if error
+          job.dispatch_bypassing_concurrency_limits
+          destroy!
+          :released
+        end
+      end
+
+      job.unblock_next_blocked_job if outcome == :exhausted
+      outcome
+    end
+
+    def uncommitted_exactly_once?
+      started_at.nil? && job.exactly_once?
+    end
+
+    def rerunnable?
+      !(started_at? && job.at_most_once?)
+    end
+
+    def within_attempt(&block)
+      transaction(requires_new: true, &block)
     end
 
     def discard
@@ -141,8 +202,10 @@ module SolidQueue
 
     private
       def perform_claimed
+        return perform_exactly_once if job.exactly_once?
+
         run_time_limit = job.run_time_limit
-        return if (job.deduplicated? || run_time_limit) && !start(run_time_limit)
+        return if (job.deduplicated? || job.at_most_once? || run_time_limit) && !start(run_time_limit)
 
         result = execute(run_time_limit)
 
@@ -151,6 +214,39 @@ module SolidQueue
         else
           record_failure(result.error)
           raise result.error
+        end
+      end
+
+      def perform_exactly_once
+        run_time_limit = job.run_time_limit
+        error = nil
+
+        outcome = SolidQueue.instrument(:perform_exactly_once, job_id: job.id, process_id: process_id, display_name: job.display_name, run_time_limit: run_time_limit) do |payload|
+          payload[:outcome] = begin
+            transaction do
+              next :conflict unless start(run_time_limit)
+
+              result = ActiveJob::DeliveryModes.performing(self) { execute(run_time_limit) }
+              raise Uncommitted.new(result.error) unless result.success?
+
+              job.finished!
+              destroy!
+              :committed
+            end
+          rescue Uncommitted => uncommitted
+            error = uncommitted.error
+            :rolled_back
+          rescue => failure
+            error = failure
+            :rolled_back
+          end
+        end
+
+        if error
+          record_failure(error)
+          raise error
+        elsif outcome == :committed
+          job.unblock_next_blocked_job
         end
       end
 

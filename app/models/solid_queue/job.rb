@@ -16,7 +16,7 @@ module SolidQueue
       end
     end
 
-    include Executable, Clearable, Recurrable, Batchable, Deduplicatable, RunTimeLimited, Nameable
+    include Executable, Clearable, Recurrable, Batchable, Deduplicatable, RunTimeLimited, Nameable, Deliverable
 
     serialize :arguments, coder: JSON
 
@@ -100,6 +100,8 @@ module SolidQueue
             deduplication_key: active_job.try(:deduplication_key)
           }.tap do |attributes|
             attributes[:batch_id] = active_job.batch_id if Batch.migrated?
+            delivery_mode = delivery_mode_from(active_job)
+            attributes[:delivery_mode] = delivery_mode if delivery_modes_migrated?
           end
         end
     end

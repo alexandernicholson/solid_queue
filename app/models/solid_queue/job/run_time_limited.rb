@@ -4,7 +4,9 @@ module SolidQueue
   class Job
     module RunTimeLimited
       def run_time_limit
-        [ job_class.try(:run_time_limit), SolidQueue.max_run_time ].compact.min
+        limits = [ job_class.try(:run_time_limit), SolidQueue.max_run_time ]
+        limits << SolidQueue.exactly_once_timeout if exactly_once?
+        limits.compact.min
       end
     end
   end

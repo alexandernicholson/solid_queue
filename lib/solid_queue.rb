@@ -55,6 +55,10 @@ module SolidQueue
     Mongo.with_session(session, client: client, &block)
   end
 
+  def exactly_once_session
+    Mongo.current_session if mongodb? && ActiveJob::DeliveryModes.current_execution
+  end
+
   mattr_accessor :logger, default: DEFAULT_LOGGER
   mattr_accessor :app_executor, :on_thread_error, :connects_to
 
@@ -95,6 +99,19 @@ module SolidQueue
 
   def retry_on_process_death=(settings)
     @@retry_on_process_death = settings.nil? ? nil : DeathRecovery.settings_from(settings)
+  end
+
+  mattr_reader :default_delivery_mode, default: :at_least_once
+  mattr_reader :exactly_once_timeout, default: 50.seconds
+
+  def default_delivery_mode=(mode)
+    @@default_delivery_mode = ActiveJob::DeliveryModes.mode!(mode)
+  end
+
+  def exactly_once_timeout=(timeout)
+    raise ArgumentError, "exactly_once_timeout must be a positive duration, got #{timeout.inspect}" unless timeout.is_a?(Numeric) && timeout.positive?
+
+    @@exactly_once_timeout = timeout
   end
 
   mattr_reader :time_zone

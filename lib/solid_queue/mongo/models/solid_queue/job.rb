@@ -35,6 +35,7 @@ module SolidQueue
     field :concurrency_key
     field :deduplication_key
     field :batch_id
+    field :delivery_mode
     field :state
     field :process_id
     field :claim_token
@@ -248,7 +249,8 @@ module SolidQueue
             arguments: ActiveSupport::JSON.encode(active_job.serialize),
             concurrency_key: active_job.concurrency_key,
             deduplication_key: active_job.try(:deduplication_key),
-            batch_id: active_job.batch_id.present? ? SolidQueue::Mongo.id!(active_job.batch_id) : nil
+            batch_id: active_job.batch_id.present? ? SolidQueue::Mongo.id!(active_job.batch_id) : nil,
+            delivery_mode: ActiveJob::DeliveryModes.mode!(active_job.try(:delivery_mode) || SolidQueue.default_delivery_mode).to_s
           }.compact
         end
 
@@ -368,7 +370,21 @@ module SolidQueue
     end
 
     def run_time_limit
-      [ job_class.try(:run_time_limit), SolidQueue.max_run_time ].compact.min
+      limits = [ job_class.try(:run_time_limit), SolidQueue.max_run_time ]
+      limits << SolidQueue.exactly_once_timeout if exactly_once?
+      limits.compact.min
+    end
+
+    def delivery_mode
+      (@attributes[:delivery_mode].presence || job_class.try(:delivery_mode) || SolidQueue.default_delivery_mode).to_sym
+    end
+
+    def exactly_once?
+      delivery_mode == :exactly_once
+    end
+
+    def at_most_once?
+      delivery_mode == :at_most_once
     end
 
     def display_name

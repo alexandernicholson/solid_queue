@@ -5,14 +5,18 @@ module SolidQueue
     extend AppExecutor
 
     ERROR_CLASSES = [ Processes::ProcessPrunedError, Processes::ProcessExitError, Processes::ProcessMissingError ].freeze
+    UNCOMMITTED_ATTEMPTS = 3
 
     class << self
       def recover(job_ids, error)
-        return if job_ids.empty? || !enabled? || !recoverable?(error)
+        return if job_ids.empty? || !recoverable?(error)
 
-        SolidQueue.instrument(:death_recovery, job_ids: job_ids, error: error, retried: [], exhausted: []) do |payload|
-          job_ids.each do |job_id|
-            case recover_job(job_id)
+        capped = job_ids.filter_map { |job_id| capped_job(job_id) }
+        return if capped.empty?
+
+        SolidQueue.instrument(:death_recovery, job_ids: capped.map(&:first), error: error, retried: [], exhausted: []) do |payload|
+          capped.each do |job_id, job, attempts|
+            case recover_job(job, attempts)
             when :retried then payload[:retried] << job_id
             when :exhausted then payload[:exhausted] << job_id
             end
@@ -35,16 +39,33 @@ module SolidQueue
         attempts.present?
       end
 
+      def attempts_for(job)
+        job.job_class.try(:process_death_attempts) || attempts
+      end
+
+      def uncommitted_exhausted?(job)
+        executions_counting_interruption(job) >= (attempts_for(job) || UNCOMMITTED_ATTEMPTS)
+      end
+
       private
         def recoverable?(error)
           ERROR_CLASSES.any? { |error_class| error.is_a?(error_class) }
         end
 
-        def recover_job(job_id)
-          failed_execution = Job.find_by(id: job_id)&.failed_execution
+        def capped_job(job_id)
+          job = Job.find_by(id: job_id)
+          attempts = job && attempts_for(job)
+          [ job_id, job, attempts ] if attempts
+        rescue StandardError => error
+          handle_thread_error(error)
+          nil
+        end
+
+        def recover_job(job, attempts)
+          failed_execution = job.failed_execution
           return unless failed_execution && ERROR_CLASSES.map(&:name).include?(failed_execution.exception_class)
 
-          if executions_counting_interruption(failed_execution.job) < attempts
+          if executions_counting_interruption(job) < attempts
             :retried if failed_execution.retry(interrupted: true)
           else
             :exhausted

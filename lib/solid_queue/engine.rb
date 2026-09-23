@@ -57,6 +57,7 @@ module SolidQueue
         include ActiveJob::ConcurrencyControls
         include ActiveJob::Deduplication
         include ActiveJob::RunTimeLimit
+        include ActiveJob::DeliveryModes
 
         if defined?(::ActiveRecord::Railtie)
           ActiveSupport.on_load :active_record do

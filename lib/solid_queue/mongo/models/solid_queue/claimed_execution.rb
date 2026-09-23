@@ -13,6 +13,20 @@ module SolidQueue
       end
     end
 
+    class Uncommitted < StandardError
+      attr_reader :error
+
+      def initialize(error)
+        @error = error
+        super(error.message)
+      end
+    end
+
+    class Conflict < StandardError; end
+
+    RELEASE_UNCOMMITTED_MAX_TIME_MS = 250
+    LOCK_CONFLICT_CODES = [ 50, 112 ].freeze
+
     class << self
       def claiming(job_ids, process_id, &block)
         SolidQueue.instrument(:claim, process_id: process_id.to_s, job_ids: Array(job_ids).map(&:to_s)) do |payload|
@@ -96,6 +110,10 @@ module SolidQueue
         def fail_many(executions, error)
           return 0 if executions.empty?
 
+          uncommitted, executions = executions.partition(&:uncommitted_exactly_once?)
+          SolidQueue::Mongo.after_commit { release_all_uncommitted(uncommitted, error) } if uncommitted.any?
+          return 0 if executions.empty?
+
           failed = []
           SolidQueue.instrument(:fail_many_claimed) do |payload|
             failed = executions.select { |execution| execution.failed_with(error) }
@@ -105,9 +123,19 @@ module SolidQueue
             payload[:size] = failed.size
             payload[:error] = error
           end
-          failed_job_ids = failed.map(&:job_id)
+          failed_job_ids = failed.select(&:rerunnable?).map(&:job_id)
           SolidQueue::Mongo.after_commit { DeathRecovery.recover(failed_job_ids, error) }
           failed.size
+        end
+
+        def release_all_uncommitted(executions, error)
+          SolidQueue.instrument(:release_uncommitted, job_ids: executions.map(&:job_id), process_ids: executions.map(&:process_id).uniq,
+            display_names: display_names_for(executions), error: error) do |payload|
+            outcomes = executions.group_by { |execution| execution.release_uncommitted(error) }
+
+            %i[ released exhausted locked ].each { |outcome| payload[outcome] = outcomes.fetch(outcome, []).map(&:job_id) }
+            payload[:size] = payload[:released].size
+          end
         end
 
         def fail_timed_out_execution(execution)
@@ -135,17 +163,58 @@ module SolidQueue
     def release
       released = false
       SolidQueue.instrument(:release_claimed, job_id: job_id, process_id: process_id, display_name: display_name) do
-        transaction(operation: "release_claimed_job") do
-          released = false
-          result = self.class.collection.update_one(
-            ownership_filter.merge(started_at: nil),
-            { "$set" => { state: "ready" }, "$unset" => claim_unsets },
-            **SolidQueue::Mongo.session_options
-          )
-          released = result.modified_count == 1
+        if exactly_once?
+          released = release_uncommitted == :released
+        else
+          transaction(operation: "release_claimed_job") do
+            released = false
+            result = self.class.collection.update_one(
+              ownership_filter.merge(started_at: nil),
+              { "$set" => { state: "ready" }, "$unset" => claim_unsets },
+              **SolidQueue::Mongo.session_options
+            )
+            released = result.modified_count == 1
+          end
         end
       end
       released
+    end
+
+    def release_uncommitted(error = nil)
+      exhausted = error && DeathRecovery.uncommitted_exhausted?(job)
+      updated = self.class.collection.find_one_and_update(
+        ownership_filter.merge(started_at: nil),
+        exhausted ? uncommitted_failure(error) : uncommitted_release(counting: error.present?),
+        projection: { _id: 1 },
+        hint: { _id: 1 },
+        max_time_ms: RELEASE_UNCOMMITTED_MAX_TIME_MS
+      )
+      return false unless updated
+      return :released unless exhausted
+
+      BatchExecution.complete(job) if batch_tracking?
+      job.unblock_next_blocked_job
+      :exhausted
+    rescue ::Mongo::Error::OperationFailure => failure
+      raise unless LOCK_CONFLICT_CODES.include?(failure.code)
+
+      :locked
+    end
+
+    def uncommitted_exactly_once?
+      started_at.nil? && exactly_once?
+    end
+
+    def rerunnable?
+      !(started_at.present? && at_most_once?)
+    end
+
+    def within_attempt
+      yield
+    rescue Exception
+      SolidQueue::Mongo.restart_transaction
+      @conflicted = true unless start(run_time_limit)
+      raise
     end
 
     def discard
@@ -158,8 +227,10 @@ module SolidQueue
 
     private
       def perform_claimed
+        return perform_exactly_once if exactly_once?
+
         run_time_limit = self.run_time_limit
-        return if (deduplicated? || run_time_limit) && !start(run_time_limit)
+        return if (deduplicated? || at_most_once? || run_time_limit) && !start(run_time_limit)
 
         result = execute(run_time_limit)
         if result.success?
@@ -167,6 +238,40 @@ module SolidQueue
         else
           record_failure(result.error)
           raise result.error
+        end
+      end
+
+      def perform_exactly_once
+        run_time_limit = self.run_time_limit
+        error = nil
+
+        SolidQueue.instrument(:perform_exactly_once, job_id: job_id, process_id: process_id, display_name: display_name, run_time_limit: run_time_limit) do |payload|
+          payload[:outcome] = begin
+            transaction(operation: "perform_exactly_once") do
+              error = nil
+              @conflicted = false
+              next :conflict unless start(run_time_limit)
+
+              result = ActiveJob::DeliveryModes.performing(self) { execute(run_time_limit) }
+              raise Uncommitted.new(result.error), cause: result.error unless result.success?
+              raise Conflict if @conflicted || !finalize_success
+
+              :committed
+            end
+          rescue Conflict
+            :conflict
+          rescue Uncommitted => uncommitted
+            error = uncommitted.error
+            :rolled_back
+          rescue => failure
+            error = failure
+            :rolled_back
+          end
+        end
+
+        if error
+          record_failure(error)
+          raise error
         end
       end
 
@@ -250,6 +355,16 @@ module SolidQueue
 
       def claim_unsets
         { process_id: true, claim_token: true, claimed_at: true, started_at: true, timeout_at: true }
+      end
+
+      def uncommitted_release(counting:)
+        values = { state: "ready" }
+        values[:arguments] = ActiveSupport::JSON.encode(arguments.merge("executions" => arguments.fetch("executions", 0).to_i + 1)) if counting
+        { "$set" => values, "$unset" => claim_unsets }
+      end
+
+      def uncommitted_failure(error)
+        { "$set" => { state: "failed", error: FailedExecution.error_from(error), finished_at: Time.current }, "$unset" => claim_unsets }
       end
 
       def start(run_time_limit)

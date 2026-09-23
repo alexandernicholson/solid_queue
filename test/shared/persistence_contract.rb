@@ -80,4 +80,20 @@ module PersistenceContract
       assert_includes model_name.constantize.method(operation).parameters, [ :key, :priority ], "#{model_name}.#{operation} takes no priority: range"
     end
   end
+
+  DELIVERY_MODE_OPERATIONS = {
+    "SolidQueue::Job" => %i[ delivery_mode exactly_once? at_most_once? ],
+    "SolidQueue::ClaimedExecution" => %i[ release_uncommitted uncommitted_exactly_once? rerunnable? within_attempt ]
+  }.freeze
+
+  def test_models_implement_the_delivery_mode_contract
+    missing = DELIVERY_MODE_OPERATIONS.flat_map do |model_name, operations|
+      operations.reject { |name| model_name.constantize.method_defined?(name) }.map { |name| "#{model_name}##{name}" }
+    end
+    missing += %i[ exactly_once_session default_delivery_mode default_delivery_mode= exactly_once_timeout exactly_once_timeout= ].reject { |name| SolidQueue.respond_to?(name) }.map { |name| "SolidQueue.#{name}" }
+    missing += %i[ within_attempt current_execution ].reject { |name| ActiveJob::DeliveryModes.respond_to?(name) }.map { |name| "ActiveJob::DeliveryModes.#{name}" }
+    missing += %i[ attempts_for uncommitted_exhausted? ].reject { |name| SolidQueue::DeathRecovery.respond_to?(name) }.map { |name| "SolidQueue::DeathRecovery.#{name}" }
+
+    assert_empty missing, "Missing delivery mode operations: #{missing.join(", ")}"
+  end
 end

@@ -126,6 +126,41 @@ class LogSubscriberTest < ActiveSupport::TestCase
     assert_match_logged :info, "Release claimed job", "job_id: 42, process_id: 7, display_name: \"User#welcome\""
   end
 
+  test "perform exactly once" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :committed
+
+    assert_match_logged :debug, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :committed"
+  end
+
+  test "perform exactly once rolled back" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :rolled_back
+
+    assert_match_logged :info, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :rolled_back"
+  end
+
+  test "perform exactly once conflict" do
+    attach_log_subscriber
+    instrument "perform_exactly_once.solid_queue", job_id: 42, process_id: 7, display_name: "User#welcome", run_time_limit: 60.seconds, outcome: :conflict
+
+    assert_match_logged :warn, "Perform exactly-once job", "job_id: 42, process_id: 7, display_name: \"User#welcome\", run_time_limit: 60 seconds, outcome: :conflict"
+  end
+
+  test "release uncommitted exactly-once claims" do
+    attach_log_subscriber
+    instrument "release_uncommitted.solid_queue", job_ids: [ 42, 43 ], released: [ 42 ], exhausted: [], locked: [ 43 ], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, size: 1, error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :info, "Release uncommitted exactly-once claims", "job_ids: [42, 43], released: [42], exhausted: [], locked: [43], process_ids: [7], display_names: #{({ 42 => "User#welcome" }).inspect}, error: \"SolidQueue::Processes::ProcessMissingError The process that was running this job no longer exists\""
+  end
+
+  test "exhausted uncommitted exactly-once claims" do
+    attach_log_subscriber
+    instrument "release_uncommitted.solid_queue", job_ids: [ 42 ], released: [], exhausted: [ 42 ], locked: [], process_ids: [ 7 ], display_names: { 42 => "User#welcome" }, size: 0, error: SolidQueue::Processes::ProcessMissingError.new
+
+    assert_match_logged :warn, "Release uncommitted exactly-once claims", "job_ids: [42], released: [], exhausted: [42], locked: [], process_ids: [7]"
+  end
+
   private
     def attach_log_subscriber
       ActiveSupport::LogSubscriber.attach_to :solid_queue, SolidQueue::LogSubscriber.new

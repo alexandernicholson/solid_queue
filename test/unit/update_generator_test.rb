@@ -99,6 +99,15 @@ class UpdateGeneratorTest < Rails::Generators::TestCase
     end
   end
 
+  test "copies the delivery modes migration" do
+    run_generator
+
+    assert_migration "db/queue_migrate/add_delivery_modes_to_solid_queue.rb" do |migration|
+      assert_match(/class AddDeliveryModesToSolidQueue/, migration)
+      assert_match(/add_column :solid_queue_jobs, :delivery_mode, :string, if_not_exists: true/, migration)
+    end
+  end
+
   private
     def with_migration_template(name)
       Dir.mktmpdir do |source_root|
