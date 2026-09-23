@@ -313,7 +313,7 @@ flowchart LR
 </div>
 
 <script>
-  const UPDATED = "2026-09-23 · core merged";
+  const UPDATED = "2026-09-23 · shim CI green";
   const STATUSES = [
     { key: "planned", label: "Planned", color: "var(--planned)" },
     { key: "building", label: "Building", color: "var(--building)" },
@@ -349,7 +349,7 @@ flowchart LR
     { rank: "·", title: "Plan and docs", track: "both", owner: "lead", status: "done" },
     { rank: "·", title: "Fork, empty branch, scaffold booting on both backends", track: "shim", owner: "lead", status: "done" },
     { rank: "·", title: "Docker test harness (SQL, MongoDB RS, shim)", track: "both", owner: "lead", status: "done" },
-    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "building", note: "Shim integrated and pushed: 647 runs, 0 failures on the latest lane; fixing Rails 8.0 pinned lane" }
+    { rank: "·", title: "Integrate, un-skip, full suites, push", track: "both", owner: "lead · shim-enqueue", status: "building", note: "Shim integrated: 649 runs, 0 failures on all 4 lanes; CI green. Waiting on core-once to un-skip 4" }
   ];
 
   const AGENTS = [
