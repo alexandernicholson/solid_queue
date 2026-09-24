@@ -42,7 +42,7 @@ The execution classes still exist, but they are **views over the jobs collection
 
 Moving between states is a single conditional update on one document, for example `{ _id: id, state: "scheduled" } → $set state: "ready"`. The condition on the current state is what makes the transition safe, instead of a row lock.
 
-Automatic Active Job retries create a new attempt document with the same `active_job_id`. Batch counts and deduplication key on `active_job_id`, so they treat all attempts as one logical job.
+Automatic Active Job retries create a new attempt document with the same `active_job_id`. Batch counts key on `active_job_id`, so they treat all attempts as one logical job.
 
 ### Other collections
 
@@ -55,7 +55,6 @@ Automatic Active Job retries create a new attempt document with the same `active
 | `solid_queue_recurring_executions` | `solid_queue_recurring_executions` | not an `Execution` subclass in Mongo |
 | `solid_queue_batches` | `solid_queue_batches` | adds a `version` counter, written by every batch mutation |
 | `solid_queue_batch_executions` | `solid_queue_batch_executions` | adds `kind: "logical"` markers used to count distinct jobs per batch |
-| `solid_queue_deduplications` | `solid_queue_deduplications` | TTL index on `expires_at` |
 
 Mongo IDs are `BSON::ObjectId`s internally and strings everywhere Solid Queue exposes them (`Job#id`, `batch_id`, `process_id`, notification payloads).
 
@@ -79,9 +78,12 @@ The Mongo models are built on `SolidQueue::Mongo::Document` (`lib/solid_queue/mo
 
 1. **`select_candidates`** reads candidate IDs from the ready index, skipping IDs this process already has in flight. This in-process reservation is the counterpart of `SKIP LOCKED`.
 2. **`lock_candidates`** runs one `update_many` over those IDs with the condition `state: "ready"`, setting `state: "claimed"`, `process_id`, a fresh `claim_token`, and incrementing `claim_generation`. Another process that got to a job first has already changed its state, so the update skips it.
-3. It then reads back the documents carrying that `claim_token`, so it knows exactly which jobs it won.
+3. It then reads back the documents carrying that `claim_token` to learn which jobs it won.
 
-If the `update_many` fails with a transport error, the outcome is unknown: the update might still be running on the server. The worker raises `AmbiguousClaimError`, an unrecoverable error, so the process is stopped and its claims are recovered like any other dead process, rather than guessing.
+How the worker handles an `update_many` error depends on what the server returned:
+
+- **Transport error, no server response:** the outcome is unknown, and the update might still be running on the server. The worker raises `AmbiguousClaimError`, an unrecoverable error, so the process is stopped and its claims are recovered like any other dead process, rather than guessing.
+- **Server response with an error, such as a write-concern error:** the update was applied on the primary, so the worker keeps whatever the token read-back returns and runs those jobs. The read-back uses the collection's default read concern (normally `local`), not `majority`. A write-concern error means the claim may not have reached a majority, so after a failover it can roll back while the worker is running the job, and another worker can claim the job again. Jobs that need protection against this must be idempotent.
 
 ### Finalizing claims
 
@@ -93,7 +95,8 @@ Active Record uses ordinary database transactions and `after_commit` callbacks.
 
 MongoDB requires a replica set or sharded cluster, because it uses multi-document transactions (`lib/solid_queue/mongo/transactions.rb`):
 
-- Transactions use snapshot reads and majority writes.
+- Transactions that Solid Queue starts use snapshot reads and majority writes. When the app passes its own session through `SolidQueue.with_mongo_session` and has already started a transaction on it, Solid Queue joins that transaction and inherits its read and write concerns; the app must start it with `read_concern: { level: :snapshot }` (or `majority`) and `write_concern: { w: :majority }` to get the same guarantees.
+- Outside transactions, queue collections use primary reads with the default read concern and `w: :majority` writes.
 - Transient errors retry the whole transaction, and unknown commit results retry the commit, both within `mongo_transaction_timeout` (5 seconds by default).
 - `SolidQueue::Mongo.after_commit` queues work to run only after a commit that Solid Queue owns.
 - In-memory record changes made inside a transaction are rolled back if it aborts.
@@ -107,6 +110,13 @@ Many Mongo operations that are several statements in Active Record are single at
 
 **MongoDB** does it in one transaction: upsert the semaphore with `value: limit` if missing, then conditionally decrement where `value > 0`. Signalling is a conditional increment where `value < limit`.
 
+On both backends the semaphore is a **lease**, not a mutex, even though the methods are named `acquire_concurrency_lock` and `release_concurrency_lock`:
+
+- A job takes its permit when it becomes `ready`, not when `perform` starts, and the permit expires after the job's `duration`. Dispatcher maintenance then deletes the expired semaphore and can let another job with the same key proceed while the first is still waiting or running. Choose a `duration` longer than queue wait plus run time.
+- Releasing a permit isn't tied to the job that holds it. After an expired semaphore is recreated, the old holder's release returns a slot on the new semaphore, so more jobs than `to:` can run at once until the counts settle.
+
+Jobs whose correctness depends on never overlapping need their own guard, such as an idempotency key or a lock in the system they modify.
+
 ### Batches
 
 Both backends track outstanding work with `batch_executions` and finish a batch when none remain. In Mongo, every addition and every completion check writes the parent batch document, bumping `version`. Two transactions racing on the same batch therefore conflict on that document, and MongoDB's write-conflict retry turns what would otherwise be a write-skew race into a serialized retry. The Active Record backend relies on row locks and a re-check instead, including a PostgreSQL-specific one in `Batch#finalize`.
@@ -115,11 +125,14 @@ Both backends track outstanding work with `batch_executions` and finish a batch 
 
 **Active Record** inserts the job row, and `after_create :prepare_for_execution` dispatches or schedules it by inserting the matching execution row.
 
-**MongoDB** decides the state **before** inserting, so the job document is written once with its final state:
+**MongoDB** decides the state **before** inserting a single job, so its document is written once with its final state:
 
-- A job with no concurrency key, batch, or deduplication key is inserted directly as `ready` or `scheduled`, without a transaction.
-- Otherwise, one transaction reserves deduplication, creates batch markers, waits on the semaphore, and inserts the job as `ready`, `scheduled`, or `blocked`. With `on_conflict: :discard` it inserts nothing.
+- A job with no concurrency key or batch is inserted directly as `ready` or `scheduled`, without a transaction.
+- Otherwise, one transaction creates batch markers, waits on the semaphore, and inserts the job as `ready`, `scheduled`, or `blocked`. With `on_conflict: :discard` it inserts nothing.
+- `enqueue_all` inserts every document in one transaction. Documents that are due and have a concurrency key are inserted without a state and then dispatched in the same transaction, becoming `ready` or `blocked`, or deleted on `on_conflict: :discard`.
 - Documents larger than 16 MiB minus a 128 KiB lifecycle reserve are rejected with `EnqueueError` before any write.
+
+Because MongoDB decides state at insert time, it has no counterpart to Active Record's `Job.prepare_all_for_execution`, `dispatch_all`, or `schedule_all`. Scheduled jobs are dispatched in bulk by `ScheduledExecution.dispatch_jobs`.
 
 ## Method name mapping
 
@@ -133,7 +146,7 @@ The Mongo method names follow Active Record wherever a method does the same job.
 | `ReadyExecution.select_candidates` | `SKIP LOCKED` select | reads IDs, skipping ones this process has in flight |
 | `ReadyExecution.lock_candidates` | inserts claimed executions, deletes ready ones | `update_many` to `claimed` with a `claim_token`, then reads back by token |
 | `Job#ready`, `Job#block` | create a ready or blocked execution row | set `state` on the job document |
-| `Execution#discard_jobs` | deletes job rows | also completes batch tracking, removes recurring markers, releases deduplication |
+| `Execution#discard_jobs` | deletes job rows | also completes batch tracking and removes recurring markers |
 | `Execution.discard_all_in_batches` | runs on the current relation | takes filter keywords, e.g. `queue_name:` |
 | `ClaimedExecution.release_all` / `fail_all_with` | run on the current relation | take the executions as an argument (default: every claimed execution) |
 | `ClaimedExecution#failed_with` | finalize only | also wraps the finalization in `finalizing`, so `perform` calls it without wrapping it twice |
@@ -155,7 +168,7 @@ The Mongo method names follow Active Record wherever a method does the same job.
 | `ScheduledExecution` scopes `due`, `next_batch` | private `ScheduledExecution.next_batch` | returns loaded jobs |
 | `Execution::Dispatching.dispatch_jobs(job_ids)` | private `ScheduledExecution.dispatch_jobs(jobs)` | takes jobs, not IDs; only scheduled executions dispatch in bulk |
 | `FailedExecution#expand_error_details_from_exception` (`before_save`) | `FailedExecution.error_from(exception)` | failure is a state change on the job document, so the error payload is built up front, with byte limits |
-| `Job#destroy` on concurrency conflict | private `Job#destroy_pending!` | no callback-driven destroy; deletes the document and cleans up batch, recurring, and deduplication records explicitly |
+| `Job#destroy` on concurrency conflict | private `Job#destroy_pending!` | no callback-driven destroy; deletes the document and cleans up batch and recurring records explicitly |
 | `Process#prune` | `Process#prune(cutoff:)` | re-checks the heartbeat cutoff atomically when deleting |
 | `Process.prune` via `prunable.excluding(...).non_blocking_lock` | `Process.prune(excluding:)` | no lock; each prune is a conditional `find_one_and_delete` |
 | `Queue#size` / `#latency` via `ReadyExecution.queued_as` | `Job.ready_metrics(queue_name)` | one helper for size and oldest `created_at` |
@@ -167,7 +180,6 @@ These have no Active Record counterpart, because they deal with things Active Re
 
 - `Job.find_many`, `Job.refresh_existing`: reload several jobs in one query, since there are no relations to reload.
 - `Job.delete_recurring_markers`: removes recurring execution markers when jobs are deleted. Active Record gets this from `has_one :recurring_execution, dependent: :destroy` and foreign keys.
-- `Job#duplicate!`, `Job#duplicate?`: flag a job whose deduplication reservation failed inside the enqueue transaction.
 - `Job#arguments=`: arguments are stored as a JSON string inside the document.
 - `BatchExecution.complete(job)`: removes a job's batch marker and schedules the completion check after commit. Active Record does this through `destroy!` callbacks.
 - `ReadyExecution::AmbiguousClaimError`, `claimed_by_token`, `resolve_claim_outcome`: claim outcome resolution, described [above](#claiming-jobs).
