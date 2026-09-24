@@ -118,20 +118,6 @@ module DeathRecoveryBehaviour
     assert SolidQueue::Job.find(active_job.provider_job_id).failed?
   end
 
-  def test_a_retried_deduplicated_job_keeps_its_key_until_it_finishes
-    SharedDeduplicatedDeathRecoveryJob.perform_later("recovered")
-    process_id = register_worker_process
-    claim(process_id)
-
-    with_death_recovery(attempts: 3) do
-      SolidQueue::ClaimedExecution.fail_for_process(process_id, process_exit_error)
-    end
-
-    assert_not SharedDeduplicatedDeathRecoveryJob.perform_later("recovered")
-    claim(register_worker_process).each(&:perform)
-    assert SharedDeduplicatedDeathRecoveryJob.perform_later("recovered")
-  end
-
   private
     def with_death_recovery(**options, &block)
       SolidQueue.with(retry_on_process_death: options, &block)

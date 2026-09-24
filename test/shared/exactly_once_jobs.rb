@@ -102,17 +102,6 @@ class SharedLimitedExactlyOnceJob < ActiveJob::Base
   end
 end
 
-class SharedDeduplicatedExactlyOnceJob < ActiveJob::Base
-  delivers :exactly_once
-  deduplicates key: ->(name) { name }
-  class_attribute :crashing, default: false
-
-  def perform(name)
-    SharedExactlyOnceEffects.record(name)
-    Thread.current.kill if self.class.crashing
-  end
-end
-
 class SharedAlwaysDyingExactlyOnceJob < ActiveJob::Base
   delivers :exactly_once
   class_attribute :starts, default: Concurrent::Array.new

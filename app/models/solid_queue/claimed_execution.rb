@@ -205,7 +205,7 @@ module SolidQueue
         return perform_exactly_once if job.exactly_once?
 
         run_time_limit = job.run_time_limit
-        return if (job.deduplicated? || job.at_most_once? || run_time_limit) && !start(run_time_limit)
+        return if (job.at_most_once? || run_time_limit) && !start(run_time_limit)
 
         result = execute(run_time_limit)
 

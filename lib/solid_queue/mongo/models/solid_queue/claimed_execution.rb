@@ -225,7 +225,7 @@ module SolidQueue
         return perform_exactly_once if exactly_once?
 
         run_time_limit = self.run_time_limit
-        return if (deduplicated? || at_most_once? || run_time_limit) && !start(run_time_limit)
+        return if (at_most_once? || run_time_limit) && !start(run_time_limit)
 
         result = execute(run_time_limit)
         if result.success?
@@ -303,7 +303,6 @@ module SolidQueue
       def finished
         finalize("finished", finished_at: Time.current) do
           BatchExecution.complete(job) if batched?
-          job.release_deduplication
           Job.delete_recurring_markers([ bson_id ]) unless SolidQueue.preserve_finished_jobs?
           unless SolidQueue.preserve_finished_jobs?
             self.class.collection.delete_one(

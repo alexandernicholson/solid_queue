@@ -11,7 +11,6 @@ module ExactlyOnceBehaviour
       SharedCrashingExactlyOnceJob.starts = Concurrent::Array.new
       SharedAlwaysDyingExactlyOnceJob.starts = Concurrent::Array.new
       SharedLimitedExactlyOnceJob.crashing = false
-      SharedDeduplicatedExactlyOnceJob.crashing = false
     end
 
     teardown do
@@ -415,22 +414,6 @@ module ExactlyOnceBehaviour
     assert_equal 1, batch.completed_jobs
     assert_equal 1, batch.failed_jobs
     assert_equal [ 1, 0 ], %w[ batched-success batched-failure ].map { |name| SharedExactlyOnceEffects.count(name) }
-  end
-
-  def test_deduplicated_exactly_once_jobs_hold_their_key_until_they_finish
-    SharedDeduplicatedExactlyOnceJob.crashing = true
-    SharedDeduplicatedExactlyOnceJob.perform_later("deduplicated")
-    crashed_process_id = register_worker_process
-    crashed_claim = claim(crashed_process_id).sole
-    Thread.new { SolidQueue.app_executor.wrap { crashed_claim.perform } }.join
-    SolidQueue::ClaimedExecution.fail_for_process(crashed_process_id, process_exit_error)
-    SharedDeduplicatedExactlyOnceJob.crashing = false
-
-    assert_not SharedDeduplicatedExactlyOnceJob.perform_later("deduplicated")
-    claim_and_perform
-
-    assert_equal 1, SharedExactlyOnceEffects.count("deduplicated")
-    assert SharedDeduplicatedExactlyOnceJob.perform_later("deduplicated")
   end
 
   def test_at_least_once_jobs_are_unaffected

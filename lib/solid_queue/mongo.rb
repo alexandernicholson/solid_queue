@@ -11,7 +11,7 @@ require_relative "mongo/document"
 
 module SolidQueue
   module Mongo
-    COLLECTIONS = %i[jobs processes semaphores pauses recurring_tasks recurring_executions batches batch_executions deduplications].freeze
+    COLLECTIONS = %i[jobs processes semaphores pauses recurring_tasks recurring_executions batches batch_executions].freeze
     DRIVER_ERRORS = [
       ::Mongo::Error,
       ::Mongo::Error::AuthError,

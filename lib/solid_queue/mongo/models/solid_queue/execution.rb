@@ -100,7 +100,6 @@ module SolidQueue
             end
             Job.delete_recurring_markers(discarded_jobs.map(&:bson_id))
             collection.delete_many(filter, **SolidQueue::Mongo.session_options)
-            Deduplication.release(discarded_jobs.select(&:deduplicated?), windowed: true)
           end
           discarded_jobs.each do |job|
             SolidQueue::Mongo.after_commit { job.unblock_next_blocked_job } if job.state == "ready" && job.concurrency_limited?

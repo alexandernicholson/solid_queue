@@ -8,9 +8,3 @@ class SharedDeathRecoveryJob < ActiveJob::Base
   end
 end
 
-class SharedDeduplicatedDeathRecoveryJob < ActiveJob::Base
-  deduplicates key: ->(key) { key }
-
-  def perform(*)
-  end
-end

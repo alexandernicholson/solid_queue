@@ -6,7 +6,7 @@ module PersistenceContract
       class: %i[ enqueue enqueue_all find find_by clear_finished_in_batches ],
       instance: %i[ id active_job_id class_name queue_name priority arguments status finished? ready? claimed? failed?
         scheduled? blocked? finished! failed_with retry discard dispatch prepare_for_execution due?
-        concurrency_limited? deduplicated? unblock_next_blocked_job batch run_time_limit display_name ]
+        concurrency_limited? unblock_next_blocked_job batch run_time_limit display_name ]
     },
     "SolidQueue::ReadyExecution" => {
       class: %i[ claim aggregated_count_across create_all_from_jobs discard_all_in_batches discard_all_from_jobs
@@ -41,10 +41,6 @@ module PersistenceContract
       class: %i[ register prune find_by ],
       instance: %i[ id kind name pid hostname metadata last_heartbeat_at supervisor_id heartbeat deregister
         update_metadata! prune ]
-    },
-    "SolidQueue::Deduplication" => {
-      class: %i[ reserve release ],
-      instance: %i[ key active_job_id expires_at ]
     },
     "SolidQueue::Batch" => {
       class: %i[ enqueue current_batch_id wrap_in_batch_context find_by migrated? warn_about_pending_migrations

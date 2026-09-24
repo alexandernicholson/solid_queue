@@ -80,13 +80,16 @@ class UpdateGeneratorTest < Rails::Generators::TestCase
     end
   end
 
-  test "copies the deduplication migration" do
+  test "copies the claim start migration" do
     run_generator
 
-    assert_migration "db/queue_migrate/add_deduplication_to_solid_queue.rb" do |migration|
-      assert_match(/create_table :solid_queue_deduplications, if_not_exists: true/, migration)
+    assert_migration "db/queue_migrate/add_claim_starts_to_solid_queue.rb" do |migration|
+      assert_match(/class AddClaimStartsToSolidQueue/, migration)
       assert_match(/add_column :solid_queue_claimed_executions, :started_at, :datetime, if_not_exists: true/, migration)
+      assert_match(/drop_table :solid_queue_deduplications, if_exists: true/, migration)
+      assert_match(/remove_column :solid_queue_jobs, :deduplication_key, :string, if_exists: true/, migration)
     end
+    assert_no_migration "db/queue_migrate/add_deduplication_to_solid_queue.rb"
   end
 
   test "copies the run time limits migration" do
