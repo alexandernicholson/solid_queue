@@ -2,59 +2,57 @@
 
 module SolidQueue
   class QueueSelector
-    attr_reader :raw_queues, :relation
+    attr_reader :raw_queues, :model
 
-    def initialize(queue_list, relation)
+    def initialize(queue_list, model)
       @raw_queues = Array(queue_list).map { |queue| queue.to_s.strip }.reject(&:empty?)
       @raw_queues = [ "*" ] if @raw_queues.empty?
-      @relation = relation
+      @model = model
     end
 
-    def filters
-      if raw_queues.include?("*") && paused_queue_names.empty?
-        [ nil ]
-      else
-        queue_names
-      end
-    end
-
-    def queue_names
-      @queue_names ||= begin
-        selected = if raw_queues.include?("*")
-          distinct_queues
-        else
-          raw_queues.each_with_object([]) do |queue, names|
-            matches = prefix?(queue) ? queues_with_prefix(queue.delete_suffix("*")) : [ queue ]
-            matches.each { |name| names << name unless names.include?(name) }
-          end
-        end
-        selected - paused_queue_names
-      end
+    # Queue names to filter on, or [ nil ] for every queue
+    # (Active Record's counterpart is scoped_relations)
+    def scoped_queues
+      all? ? [ nil ] : queue_names
     end
 
     private
-      def state
-        relation.type.to_s
+      def all?
+        include_all_queues? && paused_queues.empty?
       end
 
-      def prefix?(queue)
+      def queue_names
+        @queue_names ||= eligible_queues - paused_queues
+      end
+
+      def eligible_queues
+        if include_all_queues? then all_queues
+        else
+          raw_queues.each_with_object([]) do |queue, names|
+            matches = prefixed_name?(queue) ? prefixed_names(queue.delete_suffix("*")) : [ queue ]
+            matches.each { |name| names << name unless names.include?(name) }
+          end
+        end
+      end
+
+      def include_all_queues?
+        raw_queues.include?("*")
+      end
+
+      def all_queues
+        model.distinct_values_of(:queue_name).compact.sort
+      end
+
+      def prefixed_names(prefix)
+        model.distinct_values_of(:queue_name, queue_name: Regexp.new("^#{Regexp.escape(prefix)}")).compact.sort
+      end
+
+      def prefixed_name?(queue)
         queue.end_with?("*")
       end
 
-      def paused_queue_names
-        @paused_queue_names ||= Pause.queue_names
-      end
-
-      def distinct_queues
-        Job.distinct_queue_names(state: state).compact.sort
-      end
-
-      def queues_with_prefix(prefix)
-        pattern = Regexp.new("^#{Regexp.escape(prefix)}")
-        Job.collection.find(
-          { state: state, queue_name: pattern },
-          **SolidQueue::Mongo.session_options
-        ).distinct(:queue_name).compact.sort
+      def paused_queues
+        @paused_queues ||= Pause.queue_names
       end
   end
 end

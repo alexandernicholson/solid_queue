@@ -13,26 +13,13 @@ module SolidQueue
     class << self
       def record(task_key, run_at)
         transaction(operation: "record_recurring_execution") do
-          active_job = yield
-          if active_job && active_job.successfully_enqueued?
-            collection.insert_one(
-              {
-                _id: BSON::ObjectId.new,
-                job_id: SolidQueue::Mongo.id(active_job.provider_job_id),
-                task_key: task_key.to_s,
-                run_at: run_at,
-                created_at: Time.current
-              },
-              **SolidQueue::Mongo.session_options
-            )
+          yield.tap do |active_job|
+            if active_job && active_job.successfully_enqueued?
+              unless create_unique_by(job_id: SolidQueue::Mongo.id(active_job.provider_job_id), task_key: task_key.to_s, run_at: run_at)
+                raise AlreadyRecorded
+              end
+            end
           end
-          active_job
-        end
-      rescue ::Mongo::Error::OperationFailure => error
-        if duplicate_recurring_run?(error)
-          raise AlreadyRecorded
-        else
-          raise_persistence_error(error)
         end
       rescue *SolidQueue::Mongo::DRIVER_ERRORS => error
         raise_persistence_error(error)
@@ -78,6 +65,18 @@ module SolidQueue
       end
 
       private
+        # Requires the unique index on task_key and run_at
+        def create_unique_by(attributes)
+          collection.insert_one(
+            { _id: BSON::ObjectId.new, created_at: Time.current, **attributes },
+            **SolidQueue::Mongo.session_options
+          )
+          true
+        rescue ::Mongo::Error::OperationFailure => error
+          raise unless duplicate_recurring_run?(error)
+          false
+        end
+
         def duplicate_recurring_run?(error)
           return false unless error.respond_to?(:code) && error.code == 11_000
 

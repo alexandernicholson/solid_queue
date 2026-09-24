@@ -16,10 +16,10 @@ module SolidQueue
         candidates_seen = 0
 
         SolidQueue.instrument(:claim, process_id: process_id.to_s, job_ids: []) do |payload|
-          selectors_for(queue_list).each do |queue_name|
+          QueueSelector.new(queue_list, self).scoped_queues.each do |queue_name|
             break if limit <= 0
 
-            executions, seen = claim_from_queue(queue_name, limit, process_bson_id, priority)
+            executions, seen = select_and_lock(queue_name, process_bson_id, limit, priority)
             candidates_seen += seen
             claimed.concat(executions)
             limit -= executions.size
@@ -37,27 +37,13 @@ module SolidQueue
 
       def claiming(job_ids, process_id)
         ids = Array(job_ids).map { |id| SolidQueue::Mongo.id!(id) }
-        token = BSON::ObjectId.new
-        process_bson_id = SolidQueue::Mongo.id!(process_id)
-        error = nil
-
-        begin
-          collection.update_many(
-            { _id: { "$in" => ids }, state: "ready" },
-            claim_update(process_bson_id, token),
-            **SolidQueue::Mongo.session_options
-          )
-        rescue *SolidQueue::Mongo::DRIVER_ERRORS => caught
-          error = caught
+        lock_candidates(ids, SolidQueue::Mongo.id!(process_id)).tap do |claimed|
+          yield claimed if block_given?
         end
-
-        claimed = resolve_claim_outcome(token, process_bson_id, error, ids.size)
-        yield claimed if block_given?
-        claimed
       end
 
       def aggregated_count_across(queue_list, priority: nil)
-        selectors_for(queue_list).sum do |queue_name|
+        QueueSelector.new(queue_list, self).scoped_queues.sum do |queue_name|
           filter = { state: "ready" }
           filter[:queue_name] = queue_name if queue_name
           collection.count_documents(prioritized_within(filter, priority), **SolidQueue::Mongo.session_options)
@@ -79,39 +65,26 @@ module SolidQueue
       end
 
       private
-        def selectors_for(queue_list)
-          selector = QueueSelector.new(queue_list, self)
-          selector.filters
-        end
-
         MAX_IN_FLIGHT_CANDIDATES = 10_000
 
-        def claim_from_queue(queue_name, limit, process_id, priority)
-          candidate_ids = reserve_candidates(queue_name, limit, priority)
+        # select_candidates reserves candidates in this process so concurrent
+        # pollers skip them (the role SKIP LOCKED plays for Active Record), and
+        # lock_candidates atomically claims whichever are still ready. Returns
+        # the claimed executions and how many candidates were seen.
+        def select_and_lock(queue_name, process_id, limit, priority)
+          return [ [], 0 ] if limit <= 0
+
+          candidate_ids = select_candidates(queue_name, limit, priority)
           return [ [], 0 ] if candidate_ids.empty?
 
-          token = BSON::ObjectId.new
-          error = nil
           begin
-            begin
-              collection.update_many(
-                { _id: { "$in" => candidate_ids }, state: "ready" },
-                claim_update(process_id, token),
-                **SolidQueue::Mongo.session_options
-              )
-            rescue *SolidQueue::Mongo::DRIVER_ERRORS => caught
-              # Acknowledgement loss must never replay a non-retryable update.
-              error = caught
-            end
-
-            claimed = resolve_claim_outcome(token, process_id, error, candidate_ids.size)
-            [ claimed, candidate_ids.size ]
+            [ lock_candidates(candidate_ids, process_id), candidate_ids.size ]
           ensure
             release_candidates(candidate_ids)
           end
         end
 
-        def reserve_candidates(queue_name, limit, priority)
+        def select_candidates(queue_name, limit, priority)
           claim_lock.synchronize do
             available = MAX_IN_FLIGHT_CANDIDATES - in_flight_candidates.size
             next [] unless available.positive?
@@ -130,6 +103,23 @@ module SolidQueue
             ids.each { |id| in_flight_candidates[id] = true }
             ids
           end
+        end
+
+        def lock_candidates(candidate_ids, process_id)
+          token = BSON::ObjectId.new
+          error = nil
+          begin
+            collection.update_many(
+              { _id: { "$in" => candidate_ids }, state: "ready" },
+              claim_update(process_id, token),
+              **SolidQueue::Mongo.session_options
+            )
+          rescue *SolidQueue::Mongo::DRIVER_ERRORS => caught
+            # Acknowledgement loss must never replay a non-retryable update.
+            error = caught
+          end
+
+          resolve_claim_outcome(token, process_id, error, candidate_ids.size)
         end
 
         def release_candidates(ids)

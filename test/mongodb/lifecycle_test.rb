@@ -189,6 +189,23 @@ class MongoNativeLifecycleTest < MongoTestCase
     assert_equal %w[not-a-prefix-match default-later], remaining.map { |claim| claim.job.arguments.fetch("arguments").first }
   end
 
+  test "queues list every queue name and clear discards only ready jobs in their own queue" do
+    SolidQueue::Job.enqueue_all([
+      build_job("backend-1", queue: "backend", priority: 0),
+      build_job("backend-2", queue: "backend", priority: 0),
+      build_job("background", queue: "background", priority: 0)
+    ])
+    scheduled = MongoNativeLifecycleJob.set(queue: "backend", wait: 1.hour).perform_later("backend-scheduled")
+
+    assert_equal %w[backend background], SolidQueue::Queue.all.map(&:name).sort
+    assert_equal 2, SolidQueue::Queue.find_by_name("backend").size
+
+    assert_equal 2, SolidQueue::Queue.find_by_name("backend").clear
+    assert_equal 0, SolidQueue::Queue.find_by_name("backend").size
+    assert_equal 1, SolidQueue::Queue.find_by_name("background").size
+    assert SolidQueue::Job.find(scheduled.provider_job_id).scheduled?
+  end
+
   private
     def build_job(value, queue:, priority:)
       MongoNativeLifecycleJob.new(value).tap do |job|

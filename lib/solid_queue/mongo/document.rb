@@ -88,6 +88,10 @@ module SolidQueue
           collection.count_documents(normalize_filter(filter), **SolidQueue::Mongo.session_options)
         end
 
+        def distinct_values_of(field, filter = {})
+          collection.distinct(field, normalize_filter(filter), **SolidQueue::Mongo.session_options)
+        end
+
         def delete_all(filter = {})
           collection.delete_many(normalize_filter(filter), **SolidQueue::Mongo.session_options).deleted_count
         rescue *SolidQueue::Mongo::DRIVER_ERRORS => error

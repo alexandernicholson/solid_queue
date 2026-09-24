@@ -242,10 +242,10 @@ class MongoExactlyOnceTest < MongoTestCase
     end
 
     def with_failing_completion
-      SolidQueue::ClaimedExecution.any_instance.stubs(:finalize_success).raises(SharedExactlyOnceError, "completion")
+      SolidQueue::ClaimedExecution.any_instance.stubs(:finished).raises(SharedExactlyOnceError, "completion")
       yield
     ensure
-      SolidQueue::ClaimedExecution.any_instance.unstub(:finalize_success)
+      SolidQueue::ClaimedExecution.any_instance.unstub(:finished)
     end
 
     def dead_sessions

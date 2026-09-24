@@ -106,7 +106,7 @@ module SolidQueue
         end
       end
 
-      def sweep_stale(batch_size: 500)
+      def sweep_stale_executions(batch_size: 500)
         stale = collection.aggregate(
           [
             { "$match" => { kind: { "$ne" => "logical" } } },

@@ -133,7 +133,7 @@ module SolidQueue
 
       def sweep_stalled(stalled_for: 5.minutes, batch_size: 500)
         SolidQueue.instrument(:sweep_stalled_batches, stalled_for: stalled_for, stale_executions: 0, finished_batches: 0, started_batches: 0) do |payload|
-          payload[:stale_executions] = BatchExecution.sweep_stale(batch_size: batch_size)
+          payload[:stale_executions] = BatchExecution.sweep_stale_executions(batch_size: batch_size)
           payload[:finished_batches] = finish_stalled_batches(batch_size: batch_size)
           payload[:started_batches] = start_stalled_batches(stalled_for: stalled_for, batch_size: batch_size)
         end
@@ -142,15 +142,6 @@ module SolidQueue
       private
         def matching(filter)
           collection.find(filter, **SolidQueue::Mongo.session_options).sort(created_at: 1).map { |document| from_document(document) }
-        end
-
-        def serialize_callback(value)
-          return unless value.present?
-          return value if value.is_a?(Hash)
-
-          active_job = value.is_a?(ActiveJob::Base) ? value : value.new
-          active_job.batch_id = nil
-          active_job.serialize
         end
 
         def finish_stalled_batches(batch_size:)
@@ -189,7 +180,7 @@ module SolidQueue
 
     %i[on_finish on_success on_failure].each do |callback_name|
       define_method("#{callback_name}=") do |value|
-        self[callback_name] = self.class.send(:serialize_callback, value)
+        self[callback_name] = serialize_callback(value)
       end
     end
 
@@ -197,7 +188,7 @@ module SolidQueue
       creating = !persisted?
       if creating
         now = Time.current
-        self.active_job_batch_id ||= SecureRandom.uuid
+        set_active_job_batch_id
         self.created_at ||= now
         self.updated_at = now
       end
@@ -250,11 +241,7 @@ module SolidQueue
 
     def start
       SolidQueue::Mongo.transaction(operation: "start batch") do
-        self.class.collection.update_one(
-          { _id: bson_id, enqueued_at: nil, finished_at: nil },
-          { "$set" => { enqueued_at: Time.current, updated_at: Time.current }, "$inc" => { version: 1 } },
-          **SolidQueue::Mongo.session_options
-        )
+        mark_as_enqueued
         reload
         finish
       end
@@ -349,6 +336,19 @@ module SolidQueue
     end
 
     private
+      def set_active_job_batch_id
+        self.active_job_batch_id ||= SecureRandom.uuid
+      end
+
+      def mark_as_enqueued
+        now = Time.current
+        self.class.collection.update_one(
+          { _id: bson_id, enqueued_at: nil, finished_at: nil },
+          { "$set" => { enqueued_at: now, updated_at: now }, "$inc" => { version: 1 } },
+          **SolidQueue::Mongo.session_options
+        )
+      end
+
       def finalize
         reload
         return if BatchExecution.outstanding_for_batch?(bson_id)
@@ -360,8 +360,9 @@ module SolidQueue
             **SolidQueue::Mongo.session_options
           ).size
           completed = total_jobs.to_i - failures
-          fields = { failed_jobs: failures, completed_jobs: completed, updated_at: Time.current }
-          fields[:failed_at] = Time.current if failures.positive?
+          now = Time.current
+          fields = { failed_jobs: failures, completed_jobs: completed, updated_at: now }
+          fields[:failed_at] = now if failures.positive?
           self.class.collection.update_one({ _id: bson_id }, { "$set" => fields }, **SolidQueue::Mongo.session_options)
           fields.each { |name, value| public_send("#{name}=", value) }
           enqueue_callback_jobs
@@ -373,6 +374,16 @@ module SolidQueue
         enqueue_callback_job(:on_failure) if failed?
         enqueue_callback_job(:on_success) unless failed?
         enqueue_callback_job(:on_finish)
+      end
+
+      def serialize_callback(value)
+        return unless value.present?
+        return value if value.is_a?(Hash)
+
+        # We can pick up batch ids from context, but callbacks should never be considered a part of the batch
+        active_job = value.is_a?(ActiveJob::Base) ? value : value.new
+        active_job.batch_id = nil
+        active_job.serialize
       end
 
       def enqueue_callback_job(callback_name)

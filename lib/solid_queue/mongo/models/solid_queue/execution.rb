@@ -25,6 +25,10 @@ module SolidQueue
         super(scoped(filter))
       end
 
+      def distinct_values_of(field, filter = {})
+        super(field, scoped(filter))
+      end
+
       def create_all_from_jobs(jobs)
         ids = Array(jobs).map(&:bson_id)
         return [] if ids.empty?
@@ -37,42 +41,42 @@ module SolidQueue
         Job.find_many(ids).select { |job| job.state == type.to_s }.map { |job| from_document(job.attributes) }
       end
 
-      def discard_all_in_batches(batch_size: 500)
-        discard_matching({ state: type.to_s }, batch_size: batch_size)
+      def discard_all_in_batches(batch_size: 500, **filter)
+        discard_matching(scoped(filter), batch_size: batch_size)
       end
 
       def discard_all_in_queue(queue_name, batch_size: 500)
         raise UndiscardableError, "Can't discard jobs in progress" if type == :claimed
 
-        discard_matching({ state: type.to_s, queue_name: queue_name.to_s }, batch_size: batch_size)
+        discard_all_in_batches(batch_size: batch_size, queue_name: queue_name.to_s)
       end
 
       def discard_all_from_jobs(jobs)
         ids = Array(jobs).map(&:bson_id)
         SolidQueue.instrument(:discard_all, jobs_size: ids.size, status: type) do |payload|
-          payload[:size] = discard_ids(ids, expected_state: type.to_s)
+          payload[:size] = discard_jobs(ids, expected_state: type.to_s)
         end
-      end
-
-      def discard_matching(filter, batch_size: 500)
-        discarded = 0
-        batches = 0
-        SolidQueue.instrument(:discard_all, batch_size: batch_size, status: filter[:state]&.to_sym || type, batches: 0, size: 0) do |payload|
-          loop do
-            ids = collection.find(filter, **SolidQueue::Mongo.session_options).projection(_id: 1).sort(_id: 1).limit(batch_size).map { |row| row["_id"] }
-            break if ids.empty?
-            count = discard_ids(ids, expected_state: filter[:state])
-            break if count.zero?
-            discarded += count
-            batches += 1
-          end
-          payload[:size] = discarded
-          payload[:batches] = batches
-        end
-        discarded
       end
 
       private
+        def discard_matching(filter, batch_size: 500)
+          discarded = 0
+          batches = 0
+          SolidQueue.instrument(:discard_all, batch_size: batch_size, status: filter[:state]&.to_sym || type, batches: 0, size: 0) do |payload|
+            loop do
+              ids = collection.find(filter, **SolidQueue::Mongo.session_options).projection(_id: 1).sort(_id: 1).limit(batch_size).map { |row| row["_id"] }
+              break if ids.empty?
+              count = discard_jobs(ids, expected_state: filter[:state])
+              break if count.zero?
+              discarded += count
+              batches += 1
+            end
+            payload[:size] = discarded
+            payload[:batches] = batches
+          end
+          discarded
+        end
+
         def scoped(filter)
           filter.merge(state: type.to_s)
         end
@@ -86,7 +90,7 @@ module SolidQueue
           bounds.empty? ? filter : filter.merge(priority: bounds)
         end
 
-        def discard_ids(ids, expected_state:)
+        def discard_jobs(ids, expected_state:)
           discarded_jobs = []
           transaction(operation: "discard_jobs") do
             filter = { _id: { "$in" => ids }, state: expected_state }
@@ -120,7 +124,7 @@ module SolidQueue
       raise UndiscardableError, "Can't discard a job in progress" if state == "claimed"
 
       SolidQueue.instrument(:discard, job_id: id, status: type) do
-        discarded = self.class.send(:discard_ids, [ bson_id ], expected_state: state)
+        discarded = self.class.send(:discard_jobs, [ bson_id ], expected_state: state)
         raise SolidQueue::RecordNotFound, "Execution #{id} no longer exists" if discarded.zero?
       end
       true
