@@ -55,7 +55,7 @@ class MongoNativeRecurringTest < MongoTestCase
     assert_equal [ "once" ], MongoNativeRecurringJob.performed_values
   end
 
-  test "the deduplication key includes both task key and run time" do
+  test "the recurring execution key includes both task key and run time" do
     first_run = Time.at(Time.current.to_i).utc
     second_run = first_run + 1.minute
 

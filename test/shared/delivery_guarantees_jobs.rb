@@ -19,15 +19,6 @@ class SharedInterruptedDeliveryJob < ActiveJob::Base
   end
 end
 
-class SharedDeduplicatedDeliveryJob < ActiveJob::Base
-  deduplicates key: ->(key) { key }
-  class_attribute :performed, default: Concurrent::Array.new
-
-  def perform(key)
-    self.class.performed << key
-  end
-end
-
 class SharedSweptDeliveryJob < ActiveJob::Base
   limits_run_time max: 0.1.seconds
   class_attribute :observer

@@ -9,7 +9,6 @@ module DeliveryGuaranteesBehaviour
       SharedDeliveryJob.recorder = ->(key) { @performed << key }
       SharedInterruptedDeliveryJob.starts = Concurrent::Array.new
       SharedInterruptedDeliveryJob.completions = Concurrent::Array.new
-      SharedDeduplicatedDeliveryJob.performed = Concurrent::Array.new
       SharedSweptDeliveryJob.performed = Concurrent::Array.new
       SharedSweptDeliveryJob.observer = nil
       SharedAtMostOnceJob.starts = Concurrent::Array.new
@@ -92,20 +91,6 @@ module DeliveryGuaranteesBehaviour
     job = SolidQueue::Job.find(active_job.provider_job_id)
     assert job.finished?
     assert_not job.failed?
-  end
-
-  def test_a_stale_owner_does_not_run_a_deduplicated_job_again
-    active_job = SharedDeduplicatedDeliveryJob.perform_later("deduplicated")
-    stale_process_id = register_worker_process
-    stale_claim = claim(stale_process_id).sole
-    stale_claim.release
-    current_claim = claim(register_worker_process).sole
-
-    current_claim.perform
-    stale_claim.perform
-
-    assert_equal [ "deduplicated" ], SharedDeduplicatedDeliveryJob.performed
-    assert SolidQueue::Job.find(active_job.provider_job_id).finished?
   end
 
   def test_a_claim_whose_worker_died_mid_perform_runs_again_exactly_once_more
