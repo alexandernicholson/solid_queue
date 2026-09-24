@@ -128,25 +128,6 @@ module SolidQueue
         raise_enqueue_error(error)
       end
 
-      def prepare_all_for_execution(jobs)
-        due, not_yet_due = jobs.partition(&:due?)
-        dispatch_all(due) + schedule_all(not_yet_due)
-      end
-
-      def dispatch_all(jobs)
-        with_concurrency_limits, without_concurrency_limits = jobs.partition(&:concurrency_limited?)
-
-        dispatch_all_at_once(without_concurrency_limits)
-        dispatch_all_one_by_one(with_concurrency_limits)
-
-        successfully_dispatched(jobs)
-      end
-
-      def schedule_all(jobs)
-        schedule_all_at_once(jobs)
-        successfully_scheduled(jobs)
-      end
-
       def batch_all(jobs)
         BatchExecution.create_all_from_jobs(jobs) if Batch.migrated?
       end
@@ -215,26 +196,6 @@ module SolidQueue
       end
 
       private
-        def dispatch_all_at_once(jobs)
-          ReadyExecution.create_all_from_jobs(jobs)
-        end
-
-        def dispatch_all_one_by_one(jobs)
-          jobs.each(&:dispatch)
-        end
-
-        def successfully_dispatched(jobs)
-          refresh_existing(jobs).select { |job| job.ready? || job.blocked? }
-        end
-
-        def schedule_all_at_once(jobs)
-          ScheduledExecution.create_all_from_jobs(jobs)
-        end
-
-        def successfully_scheduled(jobs)
-          refresh_existing(jobs).select(&:scheduled?)
-        end
-
         def attributes_from_active_job(active_job)
           {
             queue_name: active_job.queue_name.presence || DEFAULT_QUEUE_NAME,
