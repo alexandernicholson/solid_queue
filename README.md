@@ -34,7 +34,6 @@ Solid Queue's default backend supports SQL databases such as MySQL, PostgreSQL, 
 - [Errors when enqueuing](#errors-when-enqueuing)
 - [Concurrency controls](#concurrency-controls)
   - [Performance considerations](#performance-considerations)
-- [Deduplication](#deduplication)
 - [Failed jobs and retries](#failed-jobs-and-retries)
   - [Error reporting on jobs](#error-reporting-on-jobs)
   - [Limiting run time](#limiting-run-time)
@@ -301,7 +300,7 @@ MongoDB queue, job, process, and batch IDs exposed by Solid Queue are strings. I
 
 MongoDB's 16 MiB BSON document limit also bounds serialized jobs. Active Job payloads are persisted as JSON inside the BSON document, preserving integers larger than BSON int64 when Active Job can serialize them. Solid Queue rejects an enqueue before writing when the job document exceeds 16 MiB minus a 128 KiB lifecycle reserve, raising `SolidQueue::Job::EnqueueError`. Constrained and batched enqueue transactions roll back atomically on this rejection. Failure metadata uses a 64 KiB envelope (exception class 1 KiB, message 16 KiB, and at most 64 backtrace lines of 512 bytes) to leave room for a job to transition to failed.
 
-Majority durability protects committed queue state; it does not make execution side effects exactly once. Without deduplication, Solid Queue provides at-least-once processing across failures and retries, so jobs that affect external systems must be idempotent. [Deduplication](#deduplication) gives at most one execution per attempt and one live job per key, and the [`:exactly_once` delivery mode](#exactly-once) commits a job's queue-database writes once.
+Majority durability protects committed queue state; it does not make execution side effects exactly once. Solid Queue provides at-least-once processing across failures and retries, so jobs that affect external systems must be idempotent. The [`:at_most_once` delivery mode](#at-most-once) never performs a started job a second time, and the [`:exactly_once` delivery mode](#exactly-once) commits a job's queue-database writes once.
 
 #### MongoDB job lifecycle
 
@@ -313,7 +312,6 @@ stateDiagram-v2
 
     state "Enqueue transaction" as Enqueue
     state "Rejected (EnqueueError, rolled back)" as Rejected
-    state "Duplicate (DuplicateError, nothing written)" as Duplicate
     state "Discarded (document deleted)" as Discarded
     state "Deleted by retention" as Cleared
     state due <<choice>>
@@ -321,7 +319,6 @@ stateDiagram-v2
     state conflict <<choice>>
 
     [*] --> Enqueue : perform_later / perform_all_later
-    Enqueue --> Duplicate : deduplication key already held
     Enqueue --> Rejected : BSON size over 16 MiB minus 128 KiB
     Enqueue --> due : insert job, batch markers, semaphore wait
     due --> Scheduled : scheduled_at in the future
@@ -351,7 +348,6 @@ stateDiagram-v2
 
     Finished --> Cleared : clear_finished_jobs_after, or at once if preserve_finished_jobs is false
 
-    Duplicate --> [*]
     Rejected --> [*]
     Discarded --> [*]
     Cleared --> [*]
@@ -359,7 +355,7 @@ stateDiagram-v2
     note right of Claimed
         Finalize matches process_id, claim_token and claim_generation,
         so a stale owner cannot finish a newer claim.
-        A deduplicated job records started_at before perform;
+        An at-most-once or run-time-limited job records started_at before perform;
         a started claim is never released to run again.
         After commit, Semaphore.signal promotes the next Blocked job
         and the batch attempt marker is removed.
@@ -368,7 +364,7 @@ stateDiagram-v2
     end note
 ```
 
-A claimed job can't be discarded. Automatic Active Job retries create a new attempt document with the same `active_job_id`, so batch counts and deduplication treat them as one logical job.
+A claimed job can't be discarded. Automatic Active Job retries create a new attempt document with the same `active_job_id`, so batch counts treat them as one logical job.
 
 #### MongoDB logging, health, and notifications
 
@@ -687,7 +683,7 @@ There are several settings that control how Solid Queue works that you can set a
 - `silence_polling`: whether to silence persistence logs emitted when polling for workers and dispatchers—defaults to `true`. This covers Active Record and, on the MongoDB backend, the Ruby Driver logger. On Rails 8.2 and later, SQL users can go further and disable SQL notifications for the whole queue database connection by setting `sql_notifications: false` in `database.yml`. This silences not only polling but also heartbeats, semaphores, maintenance queries, and everything else Solid Queue does on that SQL connection, both in logs and for `sql.active_record` subscribers.
 - `procline_prefix`: text to put before Solid Queue's process titles, e.g. `myapp solid-queue-worker(…): …`. It's `nil` by default.
 - `supervisor_pidfile`: path to a pidfile that the supervisor will create when booting to prevent running more than one supervisor in the same host, or in case you want to use it for a health check. It's `nil` by default.
-- `preserve_finished_jobs`: whether to keep finished jobs (SQL rows or MongoDB documents)—defaults to `true`. On MongoDB, removing a finished recurring job also removes its deduplication marker; retain jobs for the period in which duplicate runs must be prevented.
+- `preserve_finished_jobs`: whether to keep finished jobs (SQL rows or MongoDB documents)—defaults to `true`. On MongoDB, removing a finished recurring job also removes its recurring execution marker; retain jobs for the period in which duplicate runs must be prevented.
 - `clear_finished_jobs_after`: period to keep finished jobs when preservation is enabled—defaults to 1 day. The installer configures [a recurring cleanup job](#recurring-tasks) to clear finished jobs every hour on the 12th minute in batches. Adjust `recurring.yml` to change this; failed jobs are not cleared by this cleanup.
 - `default_concurrency_control_period`: the value to be used as the default for the `duration` parameter in [concurrency controls](#concurrency-controls). It defaults to 3 minutes.
 - `default_delivery_mode`: the [delivery mode](#delivery-modes) of jobs whose class doesn't set one—`:at_least_once` (the default), `:at_most_once` or `:exactly_once`.
@@ -938,31 +934,6 @@ In addition, mixing concurrency controls with **bulk enqueuing** (Active Job's `
 
 When jobs that have concurrency controls and `on_conflict: :discard` are enqueued in bulk, the ones that fail to be enqueued and are discarded would have `successfully_enqueued` set to `false`. The total count of jobs enqueued returned by `perform_all_later` will exclude these jobs as expected.
 
-## Deduplication
-
-Declare a deduplication key to keep at most one live job per key. It works on both the Active Record and MongoDB backends:
-
-```ruby
-class SyncAccountJob < ApplicationJob
-  deduplicates key: ->(account) { account }
-end
-
-class DigestJob < ApplicationJob
-  deduplicates key: ->(account) { account }, duration: 15.minutes
-end
-```
-
-The key is built like a concurrency key: the job class name plus the value the proc returns, with Active Record records identified by class and id.
-
-- The key is reserved in the enqueue transaction against a unique index, so concurrent enqueues of one key persist exactly one job. A rejected duplicate writes nothing: it takes no concurrency slot, doesn't join a batch, and `perform_later` returns `false` with `enqueue_error` set to `SolidQueue::Job::DuplicateError`. `perform_all_later` marks each duplicate the same way. Each rejection emits `enqueue_duplicate.solid_queue` with `deduplication_key`, `active_job_id`, and the `job_id` holding the key.
-- Without `duration`, the key is held while any attempt of the job is scheduled, ready, blocked, claimed, or failed. It frees when the job finishes or is discarded. Automatic retries keep it; a failed job keeps it until it's retried to completion or discarded.
-- With `duration`, the key is held for that window from the first enqueue, even after the job finishes. A job discarded by its concurrency limit, or by an operator, frees it at once.
-- Before `perform` runs, a deduplicated claim records `started_at`, guarded by its claim. A graceful shutdown releases only claims that haven't started; a started claim whose process dies is failed, not run again. A claim that was released or taken over before it started doesn't run.
-
-Together these give at most one execution of each deduplicated attempt and one live job per key. They don't make external side effects exactly once: if a process dies part-way through `perform`, the attempt is failed and its effects may be partial. Retrying it is an explicit operator decision.
-
-Existing Active Record installations need the `add_deduplication_to_solid_queue` migration; see [Upgrading](UPGRADING.md). MongoDB installations need `bin/rails solid_queue:prepare` to create the deduplication collection and indexes.
-
 ## Failed jobs and retries
 
 Solid Queue uses [Active Job's `retry_on` and `discard_on`](https://edgeguides.rubyonrails.org/active_job_basics.html#retrying-or-discarding-failed-jobs). Unhandled failures remain available for inspection and manual retry or discard. On SQL, failed executions are rows in `solid_queue_failed_executions`; on MongoDB, the job document records its failed state and bounded error details. Use the [Admin API](#dashboard-ui-setup) on either backend:
@@ -1015,7 +986,7 @@ end
 
 - The worker runs `perform` inside `Timeout.timeout`, which raises `SolidQueue::Processes::RunTimeExceededError`, a `Timeout::Error`, in the job's thread or fiber. It's handled like any other error: `retry_on SolidQueue::Processes::RunTimeExceededError` retries it, otherwise the job fails.
 - Before a limited job runs, its claim records `started_at` and `timeout_at`: the start plus the limit plus `config.solid_queue.run_time_grace` (30 seconds by default). Supervisor maintenance, which runs every `process_alive_threshold`, fails claims whose `timeout_at` has passed, so a job that rescues the timeout or blocks where Ruby can't interrupt it still fails. Each of these emits `run_time_exceeded.solid_queue` with `job_id`, `process_id`, `max_run_time`, `started_at` and `display_name`.
-- Like a deduplicated claim, a limited claim that has started isn't released on graceful shutdown. If its worker exits first, the claim is failed with `ProcessMissingError`.
+- Like an [at-most-once](#at-most-once) claim, a limited claim that has started isn't released on graceful shutdown. If its worker exits first, the claim is failed with `ProcessMissingError`.
 - `Timeout` interrupts code at any point, so make limited jobs safe to interrupt and keep limits well above their normal run time.
 
 Existing Active Record installations need the `add_run_time_limits_to_solid_queue` migration for the maintenance sweep; without it only the in-process timeout applies. MongoDB installations run `bin/rails solid_queue:prepare` to add the index. See [Upgrading](UPGRADING.md).
@@ -1030,7 +1001,7 @@ To retry them with a cap, set:
 config.solid_queue.retry_on_process_death = { attempts: 3 }
 ```
 
-After claims are failed with `ProcessPrunedError`, `ProcessExitError` or `ProcessMissingError`, each job is retried like a manual retry, so concurrency limits, batches and deduplication still apply. The interrupted run counts as an Active Job execution, and once a job's `executions` reach `attempts` it stays failed. Jobs failed for any other reason are never retried this way, and neither are [at-most-once](#at-most-once) jobs that had started. A job class can set its own cap with [`retries_on_process_death`](#process-death-retries-per-job), and [exactly-once](#exactly-once) jobs that hadn't committed are released instead of failed. Each recovery emits `death_recovery.solid_queue` with `job_ids`, `retried`, `exhausted` and `error`. Keep `attempts` low: a job that kills its process can take down that many workers.
+After claims are failed with `ProcessPrunedError`, `ProcessExitError` or `ProcessMissingError`, each job is retried like a manual retry, so concurrency limits and batches still apply. The interrupted run counts as an Active Job execution, and once a job's `executions` reach `attempts` it stays failed. Jobs failed for any other reason are never retried this way, and neither are [at-most-once](#at-most-once) jobs that had started. A job class can set its own cap with [`retries_on_process_death`](#process-death-retries-per-job), and [exactly-once](#exactly-once) jobs that hadn't committed are released instead of failed. Each recovery emits `death_recovery.solid_queue` with `job_ids`, `retried`, `exhausted` and `error`. Keep `attempts` low: a job that kills its process can take down that many workers.
 
 Active Job's `retry_on` and `rescue_from` handle exceptions raised inside `perform`, not process-pruning failures recorded later. Review these failures through `SolidQueue::Admin.failures` and retry only jobs whose effects are safe to repeat. The subscription below shows one possible policy on either backend.
 
@@ -1065,7 +1036,7 @@ A job's delivery mode decides what happens when a run fails or its process dies.
 | `:at_most_once` | `started_at` is recorded before `perform` | the job is failed and never runs again | at most one run |
 | `:exactly_once` | inside one queue-database transaction with `perform` and the completion | nothing committed; the claim goes back to ready and the job runs again | queue-database effects commit once |
 
-In every mode a job is claimed by one worker process at a time, a claim that another owner has since taken over can't be finished, failed or released by the old one, and a finished job is never claimed again. That is delayed_job's guarantee, and `:at_least_once` is exactly it: a job runs more than once only after a run fails or its process is presumed dead. [Deduplicated](#deduplication) and run-time-limited jobs record their start like `:at_most_once` jobs, so a started claim of theirs is never released for a second run.
+In every mode a job is claimed by one worker process at a time, a claim that another owner has since taken over can't be finished, failed or released by the old one, and a finished job is never claimed again. That is delayed_job's guarantee, and `:at_least_once` is exactly it: a job runs more than once only after a run fails or its process is presumed dead. [Run-time-limited](#limiting-run-time) jobs record their start like `:at_most_once` jobs, so a started claim of theirs is never released for a second run.
 
 Choose a mode per job class, or change the default:
 
@@ -1137,7 +1108,7 @@ Two caps keep an exactly-once job from holding a transaction or looping forever:
 - **Run time.** An exactly-once perform runs for at most `config.solid_queue.exactly_once_timeout` (50 seconds by default, 10 seconds below MongoDB's default `transactionLifetimeLimitSeconds`, leaving time to roll back or record the outcome), or its [run-time limit](#limiting-run-time) if that's shorter. Past it, `perform` is interrupted with `RunTimeExceededError`; unless `perform` rescues it, everything rolls back. On MongoDB keep the setting below the server's limit.
 - **Crash loops.** Each release after a process death counts as an execution. Once a job's executions reach its process-death cap (below), the next death fails the claim with the process-death error instead of releasing it, so a job that always kills its process stops after that many runs.
 
-Keep exactly-once jobs short: the transaction holds its row locks while `perform` runs. On SQLite that blocks every other write to the queue database. A dead process's open MongoDB transaction keeps its locks until the server aborts it, so the maintenance sweep leaves such a claim for a later tick. Concurrency limits, batches and deduplication work as for any job.
+Keep exactly-once jobs short: the transaction holds its row locks while `perform` runs. On SQLite that blocks every other write to the queue database. A dead process's open MongoDB transaction keeps its locks until the server aborts it, so the maintenance sweep leaves such a claim for a later tick. Concurrency limits and batches work as for any job.
 
 ### Process-death retries per job
 

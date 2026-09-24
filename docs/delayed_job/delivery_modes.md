@@ -60,7 +60,7 @@ Details the suite checks:
 
 ## `:at_most_once`
 
-The ownership-guarded start that deduplicated and run-time-limited jobs already use records `started_at` before `perform`. A started claim is never released on graceful shutdown or performed a second time, whether by its own or a stale owner. When its process dies it is failed, and death recovery skips it even with `retry_on_process_death`. An unstarted claim never ran, so it is released or retried like any other. Errors raised inside `perform` go through Active Job, so `retry_on` retries them as new attempts.
+The ownership-guarded start that run-time-limited jobs already use records `started_at` before `perform`. A started claim is never released on graceful shutdown or performed a second time, whether by its own or a stale owner. When its process dies it is failed, and death recovery skips it even with `retry_on_process_death`. An unstarted claim never ran, so it is released or retried like any other. Errors raised inside `perform` go through Active Job, so `retry_on` retries them as new attempts.
 
 ## `:exactly_once`
 
@@ -89,7 +89,7 @@ What happens in each case:
 - `SolidQueue.exactly_once_session` is nil outside an exactly-once perform, and on SQL.
 - A job class with Active Job's `enqueue_after_transaction_commit` enabled is enqueued after the commit, outside the transaction.
 - An exactly-once job's stale owner starts nothing and reports `:conflict`.
-- Concurrency limits, batches and deduplication keep their semantics: a released claim keeps its semaphore, batch marker and deduplication key until the rerun finishes, and a claim failed at the crash-loop cap releases the semaphore and counts as failed in its batch.
+- Concurrency limits and batches keep their semantics: a released claim keeps its semaphore and batch marker until the rerun finishes, and a claim failed at the crash-loop cap releases the semaphore and counts as failed in its batch.
 
 ## Per-job process-death cap
 
