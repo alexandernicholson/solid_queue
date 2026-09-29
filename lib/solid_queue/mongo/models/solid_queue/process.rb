@@ -128,7 +128,7 @@ module SolidQueue
           deleted
         end
 
-        deregister_supervisees unless supervised? || pruned || !removed
+        supervisees.each(&:deregister) unless supervised? || pruned || !removed
         removed
       rescue ::Mongo::Error => error
         payload[:error] = error
@@ -172,6 +172,13 @@ module SolidQueue
       ClaimedExecution.release_for_process(id) if claims_executions?
     end
 
+    def supervisees
+      self.class.collection.find(
+        { supervisor_id: bson_id },
+        **SolidQueue::Mongo.session_options
+      ).map { |document| self.class.from_document(document) }
+    end
+
     def claims
       return 0 unless claims_executions?
 
@@ -190,13 +197,6 @@ module SolidQueue
 
       def claims_executions?
         kind == "Worker"
-      end
-
-      def deregister_supervisees
-        self.class.collection.find(
-          { supervisor_id: bson_id },
-          **SolidQueue::Mongo.session_options
-        ).map { |document| self.class.from_document(document) }.each(&:deregister)
       end
   end
 end

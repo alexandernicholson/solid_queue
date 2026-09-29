@@ -14,7 +14,7 @@ module SolidQueue
       def wait(job)
         transaction(operation: "semaphore_wait") do
           now = Time.current
-          expiry = job.concurrency_duration.from_now
+          expiry = now + job.concurrency_duration
           limit = job.concurrency_limit || 1
 
           collection.update_one(
@@ -38,10 +38,11 @@ module SolidQueue
 
       def signal(job)
         transaction(operation: "semaphore_signal") do
+          now = Time.current
           limit = job.concurrency_limit || 1
           result = collection.update_one(
             { key: job.concurrency_key, value: { "$lt" => limit } },
-            { "$inc" => { value: 1 }, "$set" => { expires_at: job.concurrency_duration.from_now, updated_at: Time.current } },
+            { "$inc" => { value: 1 }, "$set" => { expires_at: now + job.concurrency_duration, updated_at: now } },
             **SolidQueue::Mongo.session_options
           )
           result.modified_count == 1

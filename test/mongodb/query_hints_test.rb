@@ -83,7 +83,7 @@ class MongoQueryHintsTest < MongoTestCase
     2.times { MongoQueryHintLimitedJob.perform_later("hinted") }
     key = MongoQueryHintLimitedJob.new("hinted").concurrency_key
 
-    assert_equal [ "blocked_release_v2" ], hints_on(:jobs) { SolidQueue::BlockedExecution.release_for(key) }
+    assert_equal [ "blocked_release_v2" ], hints_on(:jobs) { SolidQueue::BlockedExecution.release_one(key) }
     assert_equal [ "blocked_maintenance_v2" ], hints_on(:jobs) { SolidQueue::BlockedExecution.unblock(10) }
   end
 

@@ -7,4 +7,3 @@ class SharedDeathRecoveryJob < ActiveJob::Base
     self.class.executions_seen += [ executions ]
   end
 end
-

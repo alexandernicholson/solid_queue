@@ -31,15 +31,15 @@ bin/rails db:migrate
 
 Until then, limits still apply inside the worker, but claims that outlive them aren't failed by supervisor maintenance. MongoDB installations run `bin/rails solid_queue:prepare` to add the `claimed_timeout` index; queue access raises a configuration error until they do.
 
-# Upgrading to add deduplication
-Deduplication (`deduplicates key: ...`) needs new SQL columns and a table. Fresh installs get them with the base schema; existing Active Record installations need to copy the migration and run it:
+# Upgrading to remove deduplication
+Deduplication (`deduplicates key: ...`) has been removed. Remove `deduplicates` from job classes before upgrading; the class method no longer exists. Active Record installations copy the migration that drops the deduplication table and column while keeping `solid_queue_claimed_executions.started_at`, which at-most-once and run-time-limited claims use, and run it:
 
 ```bash
 bin/rails solid_queue:update
 bin/rails db:migrate
 ```
 
-MongoDB installations run `bin/rails solid_queue:prepare` instead, which creates the deduplication collection and indexes.
+The migration is safe whether or not the earlier `add_deduplication_to_solid_queue` migration ran. On MongoDB, `bin/rails solid_queue:prepare` no longer manages the `solid_queue_deduplications` collection; drop it once no process of the previous version is running.
 
 # Upgrading to version 1.7.x
 This version introduces support for grouping jobs into batches, which needs new tables. Fresh installs get them with the base schema; existing installations need to copy the migration that adds them and run it:
